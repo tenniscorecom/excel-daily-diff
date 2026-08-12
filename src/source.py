@@ -103,16 +103,16 @@ def _iter_dict_rows(
 ) -> Iterator[dict[object, object]]:
     """見出しを検証し、大量データを1行ずつ辞書化する。"""
     rows = reader.iter_rows(layout.sheet_name, min_row=layout.header_row)
-    headers = next(rows, ())
+    # 見出しの前後の空白は落とす。Excel の見出しには「備考 」のように空白が紛れ込むことが
+    # あるが、config.ini 側はキー名の空白が落ちるため、空白付きの列名を書く手段がない
+    headers = tuple(_text(value) for value in next(rows, ()))
     _validate_columns(headers, layout, criteria)
     for values in rows:
         if any(value is not None for value in values):
             yield dict(zip(headers, values, strict=False))
 
 
-def _validate_columns(
-    headers: tuple[object, ...], layout: SourceLayout, criteria: Criteria
-) -> None:
+def _validate_columns(headers: tuple[str, ...], layout: SourceLayout, criteria: Criteria) -> None:
     """必要な列が見出しに揃っているか確かめる。
 
     あとから足した絞り込みの列も見る。列名を打ち間違えたまま「1件も該当しない」

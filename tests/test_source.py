@@ -137,3 +137,20 @@ def test_raises_when_rule_column_is_missing(
 
     with pytest.raises(ExcelColumnNotFoundError):
         read_records(path, layout, criteria)
+
+
+def test_matches_columns_with_middle_dot_and_surrounding_spaces(
+    tmp_path: Path, make_book, layout: SourceLayout, criteria: Criteria
+) -> None:
+    """中黒を含む列名で絞り込めること、見出しの前後の空白が邪魔をしないこと。"""
+    path = make_book(
+        tmp_path / "一覧_20260423.xlsx",
+        [
+            ("stay", "2026-04-22", "標準A", "完了", "市街地"),
+            ("drop", "2026-04-22", "標準A", "完了", "離島B・北地区"),
+        ],
+        ["顧客番号", "予定日", "種別", "状態", " 住所・地域 "],
+    )
+    rule = ColumnRule("住所・地域", ("離島",), is_contains=True, is_exclude=True)
+
+    assert set(read_records(path, layout, _with_rules(criteria, rule))) == {"stay"}
