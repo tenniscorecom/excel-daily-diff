@@ -1,0 +1,144 @@
+"""
+src/report.py — 集計結果を Excel に書き出す
+
+集計シートは「行＝積み上げ／延期、列＝種別ごとの日付」の形にする。
+なぜ何件なのかを後から追えるように、明細シートに元の行を残す。
+"""
+
+import datetime
+import logging
+from pathlib import Path
+
+from comken.excel import ExcelWriter, Sheet
+
+from .settings import Criteria, SourceLayout
+from .source import Record
+
+logger = logging.getLogger(__name__)
+
+SUMMARY_SHEET = "集計"
+DETAIL_SHEET = "明細"
+
+STATUS_ADDED = "積み上げ"
+STATUS_POSTPONED = "延期"
+
+# 集計シートの位置（1始まり）
+PLAN_ROW = 1
+DATE_ROW = 2
+ADDED_ROW = 3
+POSTPONED_ROW = 4
+LABEL_COL = 1
+FIRST_DATE_COL = 2
+
+DATE_NUMBER_FORMAT = "m/d"
+STATUS_HEADER = "判定"  # 明細シートで、このツールが付ける唯一の列
+FROZEN_ROWS = 2  # 集計シートの見出し（種別行・日付行）を固定する
+
+
+def write_report(
+    path: Path,
+    added: list[Record],
+    postponed: list[Record],
+    criteria: Criteria,
+    layout: SourceLayout,
+) -> None:
+    """集計シートと明細シートを持つブックを作る。
+
+    Args:
+        path: 出力先の xlsx パス。
+        added: 積み上げ（前日になく当日にあった行）。
+        postponed: 延期（前日にあり当日になかった行）。
+        criteria: 日付範囲と種別の並び順。
+        layout: 明細シートの見出しに使う、読み取り元の列名。
+    """
+    dates = date_range(criteria.start_date, criteria.end_date)
+    with ExcelWriter.create(path, sheet_name=SUMMARY_SHEET) as f:
+        _write_summary(f.sheet(SUMMARY_SHEET), added, postponed, criteria, dates)
+        _write_detail(f.add_sheet(DETAIL_SHEET), added, postponed, layout)
+        f.save()
+    logger.info("出力しました: %s", path)
+
+
+def date_range(start: datetime.date, end: datetime.date) -> list[datetime.date]:
+    """開始日から終了日までの日付を1日ずつ並べて返す。"""
+    days = (end - start).days + 1
+    return [start + datetime.timedelta(days=i) for i in range(days)]
+
+
+def _write_summary(
+    sheet: Sheet,
+    added: list[Record],
+    postponed: list[Record],
+    criteria: Criteria,
+    dates: list[datetime.date],
+) -> None:
+    """種別ごとに日付を並べた集計表を書く。"""
+    added_counts = _count_by_plan_and_date(added)
+    postponed_counts = _count_by_plan_and_date(postponed)
+
+    sheet.write_cell(ADDED_ROW, LABEL_COL, STATUS_ADDED)
+    sheet.write_cell(POSTPONED_ROW, LABEL_COL, STATUS_POSTPONED)
+
+    col = FIRST_DATE_COL
+    for plan_prefix in criteria.plan_prefixes:
+        # 種別名はグループの先頭列にだけ置く（セルを結合すると並べ替え・集計がしにくい）
+        sheet.write_cell(PLAN_ROW, col, plan_prefix)
+        sheet.set_bold(PLAN_ROW, col)
+        for date in dates:
+            sheet.write_cell(DATE_ROW, col, date)
+            sheet.set_number_format(DATE_ROW, col, DATE_NUMBER_FORMAT)
+            sheet.write_cell(ADDED_ROW, col, added_counts.get((plan_prefix, date), 0))
+            sheet.write_cell(POSTPONED_ROW, col, postponed_counts.get((plan_prefix, date), 0))
+            col += 1
+
+    sheet.freeze_header(FROZEN_ROWS)
+
+
+def _write_detail(
+    sheet: Sheet, added: list[Record], postponed: list[Record], layout: SourceLayout
+) -> None:
+    """どのキーが積み上げ・延期になったかの一覧を書く。"""
+    headers = detail_headers(layout)
+    rows = [_detail_row(r, STATUS_ADDED, layout) for r in _sorted(added)]
+    rows += [_detail_row(r, STATUS_POSTPONED, layout) for r in _sorted(postponed)]
+    if not rows:
+        sheet.write_row(1, headers)
+        return
+    sheet.write_table(rows, headers=headers)
+    sheet.auto_width()
+    sheet.freeze_header()
+
+
+def detail_headers(layout: SourceLayout) -> list[str]:
+    """明細シートの見出し。読み取り元の列名をそのまま使う（config.ini を変えれば追随する）。"""
+    return [
+        STATUS_HEADER,
+        layout.key_column,
+        layout.date_column,
+        layout.plan_column,
+        layout.kind_column,
+    ]
+
+
+def _count_by_plan_and_date(records: list[Record]) -> dict[tuple[str, datetime.date], int]:
+    """種別と日付の組ごとに件数を数える。"""
+    counts: dict[tuple[str, datetime.date], int] = {}
+    for record in records:
+        key = (record.plan_prefix, record.date)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _detail_row(record: Record, status: str, layout: SourceLayout) -> dict[str, object]:
+    return {
+        STATUS_HEADER: status,
+        layout.key_column: record.customer_id,
+        layout.date_column: record.date,
+        layout.plan_column: record.plan,
+        layout.kind_column: record.kind,
+    }
+
+
+def _sorted(records: list[Record]) -> list[Record]:
+    """日付・種別・キーの順に並べる（毎回同じ並びで出力するため）。"""
+    return sorted(records, key=lambda r: (r.date, r.plan_prefix, r.customer_id))
