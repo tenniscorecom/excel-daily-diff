@@ -1,4 +1,3 @@
-import datetime
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -18,12 +17,7 @@ def layout() -> SourceLayout:
 
 @pytest.fixture
 def criteria() -> Criteria:
-    return Criteria(
-        datetime.date(2026, 4, 21),
-        datetime.date(2026, 4, 23),
-        ("標準", "上位"),
-        ("完了", "予定"),
-    )
+    return Criteria(2026, 4, ("標準", "上位"), ("完了", "予定"))
 
 
 @pytest.fixture

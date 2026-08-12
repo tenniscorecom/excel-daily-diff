@@ -10,24 +10,24 @@ from src.source import read_records
 
 def _with_rules(criteria: Criteria, *rules: ColumnRule) -> Criteria:
     return Criteria(
-        criteria.start_date,
-        criteria.end_date,
+        criteria.target_year,
+        criteria.target_month,
         criteria.plan_prefixes,
         criteria.kinds,
         rules,
     )
 
 
-def test_filters_by_all_three_conditions_and_includes_date_boundaries(
+def test_filters_by_all_three_conditions_and_target_month_boundaries(
     tmp_path: Path, make_book, layout: SourceLayout, criteria: Criteria
 ) -> None:
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
         [
-            ("start", datetime.date(2026, 4, 21), "標準A", "完了"),
-            ("end", datetime.datetime(2026, 4, 23, 12), "上位B", "予定"),
-            ("too_early", "2026/04/20", "標準A", "完了"),
-            ("too_late", "2026-04-24", "標準A", "完了"),
+            ("previous_month", datetime.date(2026, 3, 31), "標準A", "完了"),
+            ("first", datetime.date(2026, 4, 1), "標準A", "完了"),
+            ("last", datetime.datetime(2026, 4, 30, 12), "上位B", "予定"),
+            ("next_month", "2026/05/01", "標準A", "完了"),
             ("plan_contains", "2026年04月22日", "特別な標準", "完了"),
             ("kind_contains", "2026/04/22 00:00:00", "標準A", "完了予定"),
         ],
@@ -35,9 +35,9 @@ def test_filters_by_all_three_conditions_and_includes_date_boundaries(
 
     records = read_records(path, layout, criteria)
 
-    assert set(records) == {"start", "end"}
-    assert records["start"].plan_prefix == "標準"
-    assert records["end"].plan_prefix == "上位"
+    assert set(records) == {"first", "last"}
+    assert records["first"].plan_prefix == "標準"
+    assert records["last"].plan_prefix == "上位"
 
 
 def test_skips_empty_and_broken_dates(

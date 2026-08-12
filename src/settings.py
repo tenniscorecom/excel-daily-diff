@@ -13,11 +13,12 @@ from pathlib import Path
 from comken import config
 from comken.exceptions import ConfigSectionNotFoundError
 
-from .exceptions import InvalidDateSettingError
+from .exceptions import InvalidDateSettingError, InvalidMonthSettingError
 
 logger = logging.getLogger(__name__)
 
 CONFIG_DATE_FORMAT = "%Y-%m-%d"
+CONFIG_MONTH_FORMAT = "%Y-%m"
 
 # あとから絞り込みを足すためのセクション。書かれていなければ条件なしとして扱う
 SECTION_INCLUDE_CONTAINS = "INCLUDE_CONTAINS"
@@ -54,10 +55,14 @@ class ColumnRule:
 
 @dataclass(frozen=True)
 class Criteria:
-    """集計対象を絞る条件（config.ini の [FILTER] と、あとから足したセクション）。"""
+    """1行を集計対象にするかの条件（config.ini の [FILTER] と、あとから足したセクション）。
 
-    start_date: datetime.date
-    end_date: datetime.date
+    日付列は「対象月に入っているか」だけを見る。集計表の横軸になる日付とは別物で、
+    こちらは案件そのものの日付（工事の日など）を指す。
+    """
+
+    target_year: int
+    target_month: int
     plan_prefixes: tuple[str, ...]
     kinds: tuple[str, ...]
     rules: tuple[ColumnRule, ...] = ()
@@ -69,6 +74,8 @@ class Settings:
 
     input_folder: Path
     file_pattern: str
+    start_date: datetime.date  # 集計表の横軸（ファイル名の日付）の始まり
+    end_date: datetime.date  # 同じく終わり
     output_folder: Path
     layout: SourceLayout
     criteria: Criteria
@@ -78,7 +85,8 @@ def load_settings() -> Settings:
     """config.ini を読んで Settings に詰める。
 
     Raises:
-        InvalidDateSettingError: [FILTER] の日付が YYYY-MM-DD で書かれていない場合。
+        InvalidDateSettingError: [FILES] の日付が YYYY-MM-DD で書かれていない場合。
+        InvalidMonthSettingError: [FILTER] TARGET_MONTH が YYYY-MM で書かれていない場合。
     """
     layout = SourceLayout(
         sheet_name=str(config.SOURCE.SHEET_NAME),
@@ -88,9 +96,10 @@ def load_settings() -> Settings:
         plan_column=str(config.SOURCE.PLAN_COLUMN),
         kind_column=str(config.SOURCE.KIND_COLUMN),
     )
+    year, month = _to_year_month(config.FILTER.TARGET_MONTH)
     criteria = Criteria(
-        start_date=_to_date("START_DATE", config.FILTER.START_DATE),
-        end_date=_to_date("END_DATE", config.FILTER.END_DATE),
+        target_year=year,
+        target_month=month,
         plan_prefixes=tuple(config.FILTER.PLAN_PREFIXES),
         kinds=tuple(config.FILTER.KINDS),
         rules=_load_rules(),
@@ -98,6 +107,8 @@ def load_settings() -> Settings:
     return Settings(
         input_folder=Path(config.FILES.INPUT_FOLDER),
         file_pattern=str(config.FILES.FILE_PATTERN),
+        start_date=_to_date("START_DATE", config.FILES.START_DATE),
+        end_date=_to_date("END_DATE", config.FILES.END_DATE),
         output_folder=Path(config.REPORT.OUTPUT_FOLDER),
         layout=layout,
         criteria=criteria,
@@ -157,3 +168,15 @@ def _to_date(key: str, value: object) -> datetime.date:
         return datetime.datetime.strptime(str(value), CONFIG_DATE_FORMAT).date()  # noqa: DTZ007
     except ValueError as e:
         raise InvalidDateSettingError(key, str(value)) from e
+
+
+def _to_year_month(value: object) -> tuple[int, int]:
+    """config.ini に書かれた対象月（2026-08）を年と月にする。"""
+    text = str(value)
+    try:
+        parsed = datetime.datetime.strptime(text, CONFIG_MONTH_FORMAT)  # noqa: DTZ007
+    except ValueError as e:
+        raise InvalidMonthSettingError(text) from e
+    if parsed.strftime(CONFIG_MONTH_FORMAT) != text:
+        raise InvalidMonthSettingError(text)
+    return parsed.year, parsed.month

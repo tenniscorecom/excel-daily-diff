@@ -39,7 +39,7 @@ def read_records(path: Path, layout: SourceLayout, criteria: Criteria) -> dict[s
     Args:
         path: 一覧_YYYYMMDD.xlsx のパス。
         layout: シート名と列名。
-        criteria: 日付範囲・種別・区分の条件。
+        criteria: 対象月・種別・区分の条件。
 
     Returns:
         {キー列の値: Record}。条件を満たす行がなければ空の辞書。
@@ -62,7 +62,8 @@ def read_records(path: Path, layout: SourceLayout, criteria: Criteria) -> dict[s
             if date is None:
                 broken_dates += 1
                 continue
-            if not criteria.start_date <= date <= criteria.end_date:
+            # 対象月に入っているかだけを見る。集計表の横軸になるファイル名の日付とは別物
+            if (date.year, date.month) != (criteria.target_year, criteria.target_month):
                 continue
             if customer_id in records:
                 # 同じIDを複数件数えないため、明細・集計には先頭行だけを使う。

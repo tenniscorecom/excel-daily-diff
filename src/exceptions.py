@@ -13,8 +13,18 @@ class InvalidDateSettingError(ComkenError):
 
     def __init__(self, key: str, value: str) -> None:
         super().__init__(
-            f"config.ini の [FILTER] {key} が日付として読めません: {value}\n"
+            f"config.ini の [FILES] {key} が日付として読めません: {value}\n"
             "2026-04-21 のように「年-月-日」の形で書いてください。"
+        )
+
+
+class InvalidMonthSettingError(ComkenError):
+    """config.ini の対象月が YYYY-MM で書かれていない場合。"""
+
+    def __init__(self, value: str) -> None:
+        super().__init__(
+            f"config.ini の [FILTER] TARGET_MONTH が月として読めません: {value}\n"
+            "2026-08 のように「年-月」の形で書いてください。"
         )
 
 

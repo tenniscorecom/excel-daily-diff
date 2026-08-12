@@ -2,6 +2,7 @@
 src/report.py — 集計結果を Excel に書き出す
 
 集計シートは「行＝積み上げ／延期、列＝種別ごとの日付」の形にする。
+列の日付は**ファイル名の日付**（いつ時点の一覧か）であって、案件の日付ではない。
 なぜ何件なのかを後から追えるように、明細シートに元の行を残す。
 """
 
@@ -11,7 +12,8 @@ from pathlib import Path
 
 from comken.excel import ExcelWriter, Sheet
 
-from .settings import Criteria, SourceLayout
+from .diff import DailyDiff
+from .settings import Criteria, Settings, SourceLayout
 from .source import Record
 
 logger = logging.getLogger(__name__)
@@ -31,30 +33,25 @@ LABEL_COL = 1
 FIRST_DATE_COL = 2
 
 DATE_NUMBER_FORMAT = "m/d"
-STATUS_HEADER = "判定"  # 明細シートで、このツールが付ける唯一の列
+COMPARED_DATE_HEADER = "比較日"  # 明細シートで、このツールが付ける列
+STATUS_HEADER = "判定"
 FROZEN_ROWS = 2  # 集計シートの見出し（種別行・日付行）を固定する
 
+Counts = dict[tuple[str, datetime.date], int]
 
-def write_report(
-    path: Path,
-    added: list[Record],
-    postponed: list[Record],
-    criteria: Criteria,
-    layout: SourceLayout,
-) -> None:
+
+def write_report(path: Path, diffs: list[DailyDiff], settings: Settings) -> None:
     """集計シートと明細シートを持つブックを作る。
 
     Args:
         path: 出力先の xlsx パス。
-        added: 積み上げ（前日になく当日にあった行）。
-        postponed: 延期（前日にあり当日になかった行）。
-        criteria: 日付範囲と種別の並び順。
-        layout: 明細シートの見出しに使う、読み取り元の列名。
+        diffs: 日ごとの差分（古い順）。
+        settings: 横軸の期間・種別の並び順・明細シートの見出しに使う列名。
     """
-    dates = date_range(criteria.start_date, criteria.end_date)
+    dates = date_range(settings.start_date, settings.end_date)
     with ExcelWriter.create(path, sheet_name=SUMMARY_SHEET) as f:
-        _write_summary(f.sheet(SUMMARY_SHEET), added, postponed, criteria, dates)
-        _write_detail(f.add_sheet(DETAIL_SHEET), added, postponed, layout)
+        _write_summary(f.sheet(SUMMARY_SHEET), diffs, settings.criteria, dates)
+        _write_detail(f.add_sheet(DETAIL_SHEET), diffs, settings.layout)
         f.save()
     logger.info("出力しました: %s", path)
 
@@ -65,16 +62,25 @@ def date_range(start: datetime.date, end: datetime.date) -> list[datetime.date]:
     return [start + datetime.timedelta(days=i) for i in range(days)]
 
 
+def detail_headers(layout: SourceLayout) -> list[str]:
+    """明細シートの見出し。読み取り元の列名をそのまま使う（config.ini を変えれば追随する）。"""
+    return [
+        COMPARED_DATE_HEADER,
+        STATUS_HEADER,
+        layout.key_column,
+        layout.date_column,
+        layout.plan_column,
+        layout.kind_column,
+    ]
+
+
 def _write_summary(
-    sheet: Sheet,
-    added: list[Record],
-    postponed: list[Record],
-    criteria: Criteria,
-    dates: list[datetime.date],
+    sheet: Sheet, diffs: list[DailyDiff], criteria: Criteria, dates: list[datetime.date]
 ) -> None:
     """種別ごとに日付を並べた集計表を書く。"""
-    added_counts = _count_by_plan_and_date(added)
-    postponed_counts = _count_by_plan_and_date(postponed)
+    added_counts, postponed_counts = _count_by_plan_and_date(diffs)
+    # 比較できなかった日（ファイルが無い日）は 0 と区別できるよう空セルのままにする
+    compared_dates = {diff.date for diff in diffs}
 
     sheet.write_cell(ADDED_ROW, LABEL_COL, STATUS_ADDED)
     sheet.write_cell(POSTPONED_ROW, LABEL_COL, STATUS_POSTPONED)
@@ -87,20 +93,23 @@ def _write_summary(
         for date in dates:
             sheet.write_cell(DATE_ROW, col, date)
             sheet.set_number_format(DATE_ROW, col, DATE_NUMBER_FORMAT)
-            sheet.write_cell(ADDED_ROW, col, added_counts.get((plan_prefix, date), 0))
-            sheet.write_cell(POSTPONED_ROW, col, postponed_counts.get((plan_prefix, date), 0))
+            if date in compared_dates:
+                sheet.write_cell(ADDED_ROW, col, added_counts.get((plan_prefix, date), 0))
+                sheet.write_cell(POSTPONED_ROW, col, postponed_counts.get((plan_prefix, date), 0))
             col += 1
 
     sheet.freeze_header(FROZEN_ROWS)
 
 
-def _write_detail(
-    sheet: Sheet, added: list[Record], postponed: list[Record], layout: SourceLayout
-) -> None:
-    """どのキーが積み上げ・延期になったかの一覧を書く。"""
+def _write_detail(sheet: Sheet, diffs: list[DailyDiff], layout: SourceLayout) -> None:
+    """どの行が積み上げ・延期になったかの一覧を書く。"""
     headers = detail_headers(layout)
-    rows = [_detail_row(r, STATUS_ADDED, layout) for r in _sorted(added)]
-    rows += [_detail_row(r, STATUS_POSTPONED, layout) for r in _sorted(postponed)]
+    rows = []
+    for diff in diffs:
+        rows += [_detail_row(r, diff.date, STATUS_ADDED, layout) for r in _sorted(diff.added)]
+        rows += [
+            _detail_row(r, diff.date, STATUS_POSTPONED, layout) for r in _sorted(diff.postponed)
+        ]
     if not rows:
         sheet.write_row(1, headers)
         return
@@ -109,28 +118,25 @@ def _write_detail(
     sheet.freeze_header()
 
 
-def detail_headers(layout: SourceLayout) -> list[str]:
-    """明細シートの見出し。読み取り元の列名をそのまま使う（config.ini を変えれば追随する）。"""
-    return [
-        STATUS_HEADER,
-        layout.key_column,
-        layout.date_column,
-        layout.plan_column,
-        layout.kind_column,
-    ]
+def _count_by_plan_and_date(diffs: list[DailyDiff]) -> tuple[Counts, Counts]:
+    """(積み上げ, 延期) の件数を、種別と日付の組ごとに数える。"""
+    added: Counts = {}
+    postponed: Counts = {}
+    for diff in diffs:
+        for record in diff.added:
+            key = (record.plan_prefix, diff.date)
+            added[key] = added.get(key, 0) + 1
+        for record in diff.postponed:
+            key = (record.plan_prefix, diff.date)
+            postponed[key] = postponed.get(key, 0) + 1
+    return added, postponed
 
 
-def _count_by_plan_and_date(records: list[Record]) -> dict[tuple[str, datetime.date], int]:
-    """種別と日付の組ごとに件数を数える。"""
-    counts: dict[tuple[str, datetime.date], int] = {}
-    for record in records:
-        key = (record.plan_prefix, record.date)
-        counts[key] = counts.get(key, 0) + 1
-    return counts
-
-
-def _detail_row(record: Record, status: str, layout: SourceLayout) -> dict[str, object]:
+def _detail_row(
+    record: Record, compared_date: datetime.date, status: str, layout: SourceLayout
+) -> dict[str, object]:
     return {
+        COMPARED_DATE_HEADER: compared_date,
         STATUS_HEADER: status,
         layout.key_column: record.customer_id,
         layout.date_column: record.date,
