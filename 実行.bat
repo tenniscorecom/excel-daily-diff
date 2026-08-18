@@ -1,21 +1,59 @@
 @echo off
-chcp 65001 >nul
-rem ============================================================
-rem  ã“ã®ãƒ„ãƒ¼ãƒ«ã®èµ·å‹•ç”¨ã€‚ãƒ€ãƒ–ãƒ«ã‚¯ãƒªãƒƒã‚¯ã§ main.py ã‚’å®Ÿè¡Œã—ã¾ã™ã€‚
-rem
-rem  åˆå›žã ã‘: ä¸‹ã® COMKEN_ROOT ã‚’ã€å…±æœ‰ã‚µãƒ¼ãƒãƒ¼ä¸Šã® comken ã®å ´æ‰€ã«æ›¸ãæ›ãˆã‚‹ã€‚
-rem  ï¼ˆPC ã®ç’°å¢ƒå¤‰æ•°ã¯å¤‰æ›´ã—ã¾ã›ã‚“ã€‚ã“ã® bat ã®å®Ÿè¡Œä¸­ã ã‘ PYTHONPATH ã‚’è¨­å®šã—ã¾ã™ï¼‰
-rem ============================================================
+setlocal
+rem ‚±‚Ìƒc[ƒ‹‚Ì‹N“®—pBƒ^[ƒ~ƒiƒ‹‚©‚ç `ŽÀs.bat` ‚ð’@‚­‚©A`python main.py` ‚ð’¼ÚŽÀs‚µ‚Ä‚­‚¾‚³‚¢B
+rem **RPA Šî”Õ‚©‚çŒÄ‚Ño‚·‚Æ‚«‚Ì“üŒû‚Å‚à‚ ‚éB** I—¹ƒR[ƒh‚ð‚»‚Ì‚Ü‚Ü•Ô‚·‚Ì‚ÅA
+rem ƒXƒPƒWƒ…[ƒ‰‚â RPA ‚ª¬”Û‚ð”»’f‚Å‚«‚éipause ‚ð“ü‚ê‚Ä‚¢‚È‚¢‚Ì‚ÍA–³lŽÀs‚ÅŽ~‚Ü‚ç‚È‚¢‚æ‚¤‚É‚·‚é‚½‚ßjB
+rem comken ‚ð•Ê‚ÌêŠ‚ÖˆÚ‚µ‚½‚Æ‚«‚ÍA‚±‚±‚Æ .vscode\settings.json ‚Ì—¼•û‚ð’¼‚µ‚Ä‚­‚¾‚³‚¢B
 
-set "COMKEN_ROOT=\\server\share\tools\comken"
+rem comken ‚ÌêŠBPC ‚ÉP‹v“o˜^‚µ‚Ä‚¢‚È‚¢ê‡‚¾‚¯A‚±‚±‚ªŽg‚í‚ê‚é
+set "PYTHON_LIBRARY=\\server\share\tools"
 
-cd /d "%~dp0"
-set "PYTHONPATH=%COMKEN_ROOT%;%PYTHONPATH%"
-
-python main.py
-
-if errorlevel 1 (
-  echo.
-  echo [!] ã‚¨ãƒ©ãƒ¼ã§çµ‚äº†ã—ã¾ã—ãŸã€‚ä¸Šã®èµ¤ã„æ–‡å­—ï¼ˆã‚¨ãƒ©ãƒ¼åï¼‰ã‚’ docs\ERRORS.md ã§èª¿ã¹ã¦ãã ã•ã„ã€‚
-  pause
+rem ‹¤—LƒtƒHƒ‹ƒ_i\\ƒT[ƒo[–¼\...j‚©‚ç‹N“®‚³‚ê‚Ä‚à“®‚­‚æ‚¤ pushd ‚ðŽg‚¤icd ‚Í UNC •s‰Âj
+pushd "%~dp0" || (
+  echo [ƒGƒ‰[] ‚±‚ÌƒtƒHƒ‹ƒ_‚ðŠJ‚¯‚Ü‚¹‚ñ‚Å‚µ‚½: %~dp0
+  exit /b 1
 )
+
+where python >nul 2>&1 || (
+  echo [ƒGƒ‰[] Python ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB
+  echo   ‚±‚Ìƒpƒ\ƒRƒ“‚É Python ‚ª“ü‚Á‚Ä‚¢‚é‚©AŠÇ—ŽÒ‚ÉŠm”F‚µ‚Ä‚­‚¾‚³‚¢B
+  popd
+  exit /b 1
+)
+
+rem ‚·‚Å‚É PYTHONPATH ‚ª’Ê‚Á‚Ä‚¢‚ê‚ÎA‚»‚Ì‚Ü‚Ü“®‚©‚·iP‹v“o˜^‚µ‚Ä‚ ‚éê‡j
+python -c "import comken" >nul 2>&1
+if not errorlevel 1 goto :run
+
+rem ’Ê‚Á‚Ä‚¢‚È‚¢‚Ì‚ÅA‚±‚Ì bat ‚É‘‚¢‚Ä‚ ‚éêŠ‚ðŽg‚¤
+set "PYTHONPATH=%PYTHON_LIBRARY%;%PYTHONPATH%"
+
+rem ˆê”Ô‘½‚¢Ž¸”s‚ðæ‚É–¼Žw‚µ‚Åo‚·B‚±‚±‚ÅŽ~‚ß‚È‚¢‚ÆAŒã‚©‚ço‚é Python ‚ÌƒGƒ‰[‚ª
+rem uModuleNotFoundError: comkenv‚¾‚¯‚É‚È‚èAŒ´ˆö‚ª‹¤—LƒT[ƒo[‚¾‚Æ•ª‚©‚ç‚È‚¢
+if not exist "%PYTHON_LIBRARY%\comken\__init__.py" (
+  echo [ƒGƒ‰[] ‹¤’Êƒ‰ƒCƒuƒ‰ƒŠ comken ‚ªŒ©‚Â‚©‚è‚Ü‚¹‚ñB
+  echo     ‚³‚ª‚µ‚½êŠ: %PYTHON_LIBRARY%
+  echo.
+  echo   - ‹¤—LƒT[ƒo[‚É‚Â‚È‚ª‚Á‚Ä‚¢‚é‚©Šm”F‚µ‚Ä‚­‚¾‚³‚¢
+  echo   - ‚Â‚È‚ª‚Á‚Ä‚¢‚é‚È‚çA‚±‚Ì bat ‚Ì PYTHON_LIBRARY ‚ª³‚µ‚¢‚©Šm”F‚µ‚Ä‚­‚¾‚³‚¢
+  echo   - ‚±‚Ìƒpƒ\ƒRƒ“‚Å‰½“x‚àŽg‚¤‚È‚çAcomken ‚ÌƒtƒHƒ‹ƒ_‚É‚ ‚é
+  echo     setup_comken.bat ‚ð1‰ñŽÀs‚µ‚Ä‚¨‚­‚ÆAˆÈŒã‚±‚Ì bat ‚ð’¼‚³‚¸‚ÉÏ‚Ý‚Ü‚·
+  popd
+  exit /b 1
+)
+
+:run
+python main.py
+rem I—¹ƒR[ƒh‚Í popd ‚æ‚è‘O‚ÉT‚¦‚éipopd ‚ª¬Œ÷‚·‚é‚Æ 0 ‚Åã‘‚«‚³‚ê‚éj
+set "EXIT_CODE=%ERRORLEVEL%"
+popd
+
+if not "%EXIT_CODE%"=="0" (
+  echo.
+  echo [Ž¸”s] ˆ—‚ð’†’f‚µ‚Ü‚µ‚½iI—¹ƒR[ƒh %EXIT_CODE%jB
+  echo   ƒGƒ‰[‚Ì“à—e‚Í‰æ–Ê‚Ìã‚Ì‚Ù‚¤‚Éo‚Ä‚¢‚Ü‚·Blogs ƒtƒHƒ‹ƒ_‚É‚àŽc‚Á‚Ä‚¢‚Ü‚·B
+  echo   •ª‚©‚ç‚È‚¢‚Æ‚«‚ÍA‚±‚Ì‰æ–Ê‚ðƒXƒNƒŠ[ƒ“ƒVƒ‡ƒbƒg‚µ‚ÄŠÇ—ŽÒ‚Ö‘—‚Á‚Ä‚­‚¾‚³‚¢B
+)
+
+rem I—¹ƒR[ƒh‚ð‚»‚Ì‚Ü‚Ü•Ô‚·BƒXƒPƒWƒ…[ƒ‰‚â RPA Šî”Õ‚ª¬”Û‚ð”»’f‚Å‚«‚é‚æ‚¤‚É‚·‚é
+endlocal & exit /b %EXIT_CODE%

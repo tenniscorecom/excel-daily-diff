@@ -11,8 +11,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from .settings import Criteria, SourceLayout
-from .source import Record, read_records
+from src.settings import Criteria, SourceLayout
+from src.source import Record, read_records
 
 logger = logging.getLogger(__name__)
 

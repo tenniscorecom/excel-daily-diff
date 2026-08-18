@@ -3,9 +3,6 @@
 エラーが出たら、**黒い画面（コンソール）の一番下あたりに出ている「エラー名」**をこの表から探してください。
 エラー名は `SheetNotFoundError` のような英語の単語です。
 
-> このファイルは comken の雛形です。プロジェクトで使うときはルートにコピーし、
-> そのプロジェクト固有のエラーと対処を追記してください。
-
 ---
 
 ## まず試すこと（どのエラーでも共通）
@@ -13,6 +10,10 @@
 1. 開いている Excel ファイルをすべて閉じて、もう一度実行する
 2. それでもダメなら、このガイドでエラー名を探す
 3. 表にない・解決しない場合は、**エラーの画面全体をスクリーンショット**して管理者に送る
+
+| エラー名 | 意味 | 自分でできる対処 |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'comken'` | 共通ライブラリ comken を読み込めない | 共有サーバーに繋がっているか確認する。繋がっているなら `実行.bat` の `PYTHON_LIBRARY` の場所が正しいかを管理者に確認する |
 
 ---
 
@@ -63,8 +64,8 @@
 | `CsvColumnNotFoundError` | CSV の列見出しが見つからない | CSV の1行目を確認する |
 | `KeyColumnNotFoundError` | 比較に使うキー列が見つからない | Excel・CSV の列名を確認する |
 | `InvalidColumnError` | 列の指定が正しくない（打ち間違いなど） | 列は番号（1, 2, …）か列記号（"A", "AA"）で指定する |
-| `RpaLibraryNotFoundError` | 社内ライブラリを読み込めない | 実行.bat の PYTHONPATH に社内ライブラリが入っているか確認する。バージョンが変わった場合は管理者へ連絡する |
-| `ConfigFileNotFoundError` | config.ini が見つからない | config.ini.example をコピーして config.ini を作る |
+| `RpaLibraryNotFoundError` | 社内ライブラリを読み込めない | 実行.bat の `PYTHON_LIBRARY` が `PYTHONPATH` に入る場所と合っているか確認する。バージョンが変わった場合は管理者へ連絡する |
+| `ConfigFileNotFoundError` | config.ini も config.ini.example も見当たらない | config.ini.example がプロジェクトにあるか確認する。無い場合は雛形（`comken/templates/新規プロジェクト/config.ini.example`）から取り直す |
 | `ConfigCreatedFromExampleError` | config.ini が無かったので example から作った | 作られた config.ini の値を書き換えて、もう一度実行する |
 | `ConfigLowerCaseNameError` | config.ini のセクション名・キー名に小文字がある | 表示された名前を大文字に書き換える（`[files]` → `[FILES]`） |
 | `ConfigSectionNotFoundError` | config.ini の必要な節がない | 表示されたセクション名を config.ini に追加する |

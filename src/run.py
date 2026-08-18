@@ -16,12 +16,12 @@ import datetime
 import logging
 from pathlib import Path
 
-from comken.utils.files import FileFinder, date_in_name
+from comken.core import FileFinder, date_in_name
 
-from .diff import daily_diffs
-from .exceptions import ComparisonFileNotEnoughError
-from .report import write_report
-from .settings import Settings
+from src.diff import daily_diffs
+from src.exceptions import ComparisonFileNotEnoughError
+from src.report import write_report
+from src.settings import Settings
 
 logger = logging.getLogger(__name__)
 

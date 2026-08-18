@@ -13,7 +13,7 @@ from pathlib import Path
 from comken import config
 from comken.exceptions import ConfigSectionNotFoundError
 
-from .exceptions import InvalidDateSettingError, InvalidMonthSettingError
+from src.exceptions import InvalidDateSettingError, InvalidMonthSettingError
 
 logger = logging.getLogger(__name__)
 
