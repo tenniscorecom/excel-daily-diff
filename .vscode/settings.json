@@ -4,7 +4,11 @@
   //
   // 実行.bat と 認証情報の登録.bat の PYTHON_LIBRARY と同じ場所を指すこと。
   // JSON では \ が特殊文字なので、区切りは / で書く（\\server\share → //server/share）。
-  "python.analysis.extraPaths": ["//server/share/tools"],
+  // 開発機と社内配置先の両方を並べる。存在しない方は無視されるので、
+  // どちらの環境で開いてもそのまま補完と型チェックが効く。
+  // 社内だけを書いていると、自宅で開いたとき comken が解決できず
+  // エディタだけが「型が Unknown」と言い続ける状態になる。
+  "python.analysis.extraPaths": ["F:/dev/comken", "//server/share/tools"],
 
   // 社内 BO 環境には .venv が無い（pip が使えないため）。
   // その場合はこの指定が外れるので、VS Code 右下の Python バージョン表示をクリックして
