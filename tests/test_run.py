@@ -18,7 +18,7 @@ def _settings(
 ) -> Settings:
     return Settings(
         folder,
-        FilePattern(prefix="一覧_", extension="xlsx"),
+        FilePattern(name="一覧_.xlsx"),
         start,
         end,
         folder,

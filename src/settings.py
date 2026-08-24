@@ -33,17 +33,17 @@ SECTION_EXCLUDE_EXACT = "EXCLUDE_EXACT"
 
 @dataclass(frozen=True)
 class FilePattern:
-    """config.ini の FILE_PATTERN（``一覧_*.xlsx`` のようなワイルドカード表記）を
-    ``DateFileFinder.dated()`` が受け取れる ``prefix`` と ``extension`` に分けたもの。"""
+    """config.ini の FILE_PATTERN（``一覧_*.xlsx`` のようなワイルドカード表記）から
+    ``*`` を取り除いた、``DateFileFinder.dated()`` に渡すファイル名。"""
 
-    prefix: str
-    extension: str
+    name: str
 
 
 def split_file_pattern(pattern: str) -> FilePattern:
-    """``FILE_PATTERN`` を ``DateFileFinder.dated()`` 用に分割する。
+    """``FILE_PATTERN`` から ``*`` を取り除き ``DateFileFinder.dated()`` 用に整える。
 
-    ``*`` の手前を ``prefix``、最後の ``.`` 以降を ``extension`` として取り出す。
+    ``*`` を取り除いた文字列を ``name`` として返す。``DateFileFinder.dated()`` は
+    この ``name`` をファイル名の先頭一致として受け、残りはファイル名から日付を拾う。
     ``*`` が無いパターンや ``*`` が複数あるパターンは対応外（docstring に明記する）。
     """
     star_index = pattern.find("*")
@@ -57,7 +57,6 @@ def split_file_pattern(pattern: str) -> FilePattern:
             pattern,
             "ワイルドカード '*' が複数含まれています。'*' は1つだけ使えます。",
         )
-    head = pattern[:star_index]
     dot_index = pattern.rfind(".")
     if dot_index < star_index:
         # '*' の後に '.' が無いケースは拡張子の指定として読めない
@@ -65,7 +64,7 @@ def split_file_pattern(pattern: str) -> FilePattern:
             pattern,
             "'*' の後に拡張子（.xlsx など）がありません。",
         )
-    return FilePattern(prefix=head, extension=pattern[dot_index + 1 :])
+    return FilePattern(name=pattern.replace("*", ""))
 
 
 @dataclass(frozen=True)
@@ -114,7 +113,7 @@ class Settings:
     """このツールが使う設定一式。"""
 
     input_folder: Path
-    file_pattern: FilePattern  # prefix / extension に分割済み
+    file_pattern: FilePattern  # split_file_pattern() で '*' を取り除いた名前
     start_date: datetime.date  # 集計表の横軸（ファイル名の日付）の始まり
     end_date: datetime.date  # 同じく終わり
     output_folder: Path
