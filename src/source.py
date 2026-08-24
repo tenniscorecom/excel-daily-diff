@@ -7,12 +7,12 @@ src/source.py — 一覧_YYYYMMDD.xlsx を読んで、集計対象の行だけ�
 
 import datetime
 import logging
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from comken.exceptions import ExcelColumnNotFoundError
-from comken.toolbox.excel import ExcelReader
+from comken.toolbox.excel import Excel
 
 from src.settings import ColumnRule, Criteria, SourceLayout
 
@@ -51,9 +51,11 @@ def read_records(path: Path, layout: SourceLayout, criteria: Criteria) -> dict[s
     duplicate_ids: list[str] = []
     broken_dates = 0
     row_count = 0
-    # ExcelReader は初期オープンも read_only で、iter_rows は行をストリーミングする。
-    with ExcelReader(path) as reader:
-        for row in _iter_dict_rows(reader, layout, criteria):
+    # Excel(read_only=True) は openpyxl の読み取り専用モード相当。read_computed_rows_as_dicts は
+    # 見出し行をキーにした dict のリストを返すので、列名でのアクセスは従来どおり
+    with Excel(path, read_only=True) as excel:
+        rows = _read_dict_rows(excel, layout, criteria)
+        for row in rows:
             row_count += 1
             customer_id = _customer_id(row.get(layout.key_column))
             if not customer_id or not _matches(row, layout, criteria):
@@ -99,21 +101,36 @@ def read_records(path: Path, layout: SourceLayout, criteria: Criteria) -> dict[s
     return records
 
 
-def _iter_dict_rows(
-    reader: ExcelReader, layout: SourceLayout, criteria: Criteria
-) -> Iterator[dict[object, object]]:
-    """見出しを検証し、大量データを1行ずつ辞書化する。"""
-    rows = reader.iter_rows(layout.sheet_name, min_row=layout.header_row)
-    # 見出しの前後の空白は落とす。Excel の見出しには「備考 」のように空白が紛れ込むことが
-    # あるが、config.ini 側はキー名の空白が落ちるため、空白付きの列名を書く手段がない
-    headers = tuple(_text(value) for value in next(rows, ()))
-    _validate_columns(headers, layout, criteria)
-    for values in rows:
-        if any(value is not None for value in values):
-            yield dict(zip(headers, values, strict=False))
+def _read_dict_rows(
+    excel: Excel, layout: SourceLayout, criteria: Criteria
+) -> list[dict[str, Any]]:
+    """見出しを検証し、1行ずつ辞書化したリストを返す。
+
+    旧 API の ``iter_rows`` ベース実装では 1 行ずつストリーミングしていたが、新 API は
+    最初から dict のリストを返す。中身は同じなので、利用側 (``read_records``) は
+    ``for row in rows`` の形をそのまま使える。
+    """
+    raw_rows = excel.read_computed_rows_as_dicts(
+        layout.sheet_name, header_row=layout.header_row
+    )
+    if not raw_rows:
+        return []
+    # 見出しの前後の空白はここで落とす。Excel の見出しには「備考 」のように空白が紛れ込む
+    # ことがあるが、config.ini 側はキー名の空白が落ちるため、空白付きの列名を書く手段がない。
+    # 新 API は dict キーに生の見出し名を入れるので、利用側でまとめて剥がす。
+    original_keys = list(raw_rows[0].keys())
+    stripped_keys = [_text(key) for key in original_keys]
+    _validate_columns(stripped_keys, layout, criteria)
+    rows: list[dict[str, Any]] = []
+    for raw_row in raw_rows:
+        # 全部 None の行は Excel の空行（行末の余白など）。集計対象ではないので飛ばす
+        if all(value is None for value in raw_row.values()):
+            continue
+        rows.append(dict(zip(stripped_keys, raw_row.values(), strict=False)))
+    return rows
 
 
-def _validate_columns(headers: tuple[str, ...], layout: SourceLayout, criteria: Criteria) -> None:
+def _validate_columns(headers: list[str], layout: SourceLayout, criteria: Criteria) -> None:
     """必要な列が見出しに揃っているか確かめる。
 
     あとから足した絞り込みの列も見る。列名を打ち間違えたまま「1件も該当しない」

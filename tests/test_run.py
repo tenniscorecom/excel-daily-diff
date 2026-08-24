@@ -6,7 +6,7 @@ from openpyxl import load_workbook
 
 from src.exceptions import ComparisonFileNotEnoughError
 from src.run import _target_files, run
-from src.settings import Criteria, Settings, SourceLayout
+from src.settings import Criteria, FilePattern, Settings, SourceLayout
 
 
 def _settings(
@@ -16,7 +16,15 @@ def _settings(
     start: datetime.date = datetime.date(2026, 4, 21),
     end: datetime.date = datetime.date(2026, 4, 23),
 ) -> Settings:
-    return Settings(folder, "一覧_*.xlsx", start, end, folder, layout, criteria)
+    return Settings(
+        folder,
+        FilePattern(prefix="一覧_", extension="xlsx"),
+        start,
+        end,
+        folder,
+        layout,
+        criteria,
+    )
 
 
 def test_target_files_includes_only_previous_and_files_in_range(

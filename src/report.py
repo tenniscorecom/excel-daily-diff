@@ -10,7 +10,9 @@ import datetime
 import logging
 from pathlib import Path
 
-from comken.toolbox.excel import ExcelWriter, Sheet
+from openpyxl.utils import get_column_letter
+
+from comken.toolbox.excel import Excel, Sheet
 
 from src.diff import DailyDiff
 from src.settings import Criteria, Settings, SourceLayout
@@ -49,10 +51,15 @@ def write_report(path: Path, diffs: list[DailyDiff], settings: Settings) -> None
         settings: 横軸の期間・種別の並び順・明細シートの見出しに使う列名。
     """
     dates = date_range(settings.start_date, settings.end_date)
-    with ExcelWriter.create(path, sheet_name=SUMMARY_SHEET) as f:
-        _write_summary(f.sheet(SUMMARY_SHEET), diffs, settings.criteria, dates)
-        _write_detail(f.add_sheet(DETAIL_SHEET), diffs, settings.layout)
-        f.save()
+    with Excel(path) as excel:
+        # 集計シートは表示用のレイアウト（4行・可変列）なので、Excel 側で
+        # create_data_sheet ではなく create_sheet を使う。
+        # （create_data_sheet だと PY_ 接頭辞が付き、表示用の format / freeze_panes が使えない）
+        summary_sheet = excel.create_sheet(SUMMARY_SHEET)
+        detail_sheet = excel.create_sheet(DETAIL_SHEET)
+        _write_summary(summary_sheet, diffs, settings.criteria, dates)
+        _write_detail(detail_sheet, diffs, settings.layout)
+        # Excel は with ブロックの正常終了時に自動保存される
     logger.info("出力しました: %s", path)
 
 
@@ -82,40 +89,44 @@ def _write_summary(
     # 比較できなかった日（ファイルが無い日）は 0 と区別できるよう空セルのままにする
     compared_dates = {diff.date for diff in diffs}
 
-    sheet.write_cell(ADDED_ROW, LABEL_COL, STATUS_ADDED)
-    sheet.write_cell(POSTPONED_ROW, LABEL_COL, STATUS_POSTPONED)
+    _write_cell(sheet, ADDED_ROW, LABEL_COL, STATUS_ADDED)
+    _write_cell(sheet, POSTPONED_ROW, LABEL_COL, STATUS_POSTPONED)
 
     col = FIRST_DATE_COL
     for plan_prefix in criteria.plan_prefixes:
         # 種別名はグループの先頭列にだけ置く（セルを結合すると並べ替え・集計がしにくい）
-        sheet.write_cell(PLAN_ROW, col, plan_prefix)
-        sheet.set_bold(PLAN_ROW, col)
+        _write_cell(sheet, PLAN_ROW, col, plan_prefix)
+        _format(sheet, PLAN_ROW, col, bold=True)
         for date in dates:
-            sheet.write_cell(DATE_ROW, col, date)
-            sheet.set_number_format(DATE_ROW, col, DATE_NUMBER_FORMAT)
+            _write_cell(sheet, DATE_ROW, col, date)
+            _format(sheet, DATE_ROW, col, number_format=DATE_NUMBER_FORMAT)
             if date in compared_dates:
-                sheet.write_cell(ADDED_ROW, col, added_counts.get((plan_prefix, date), 0))
-                sheet.write_cell(POSTPONED_ROW, col, postponed_counts.get((plan_prefix, date), 0))
+                _write_cell(sheet, ADDED_ROW, col, added_counts.get((plan_prefix, date), 0))
+                _write_cell(sheet, POSTPONED_ROW, col, postponed_counts.get((plan_prefix, date), 0))
             col += 1
 
-    sheet.freeze_header(FROZEN_ROWS)
+    sheet.freeze_panes(_cell_ref(FROZEN_ROWS + 1, LABEL_COL))
 
 
 def _write_detail(sheet: Sheet, diffs: list[DailyDiff], layout: SourceLayout) -> None:
     """どの行が積み上げ・延期になったかの一覧を書く。"""
     headers = detail_headers(layout)
-    rows = []
+    rows: list[dict[str, object]] = []
     for diff in diffs:
         rows += [_detail_row(r, diff.date, STATUS_ADDED, layout) for r in _sorted(diff.added)]
         rows += [
             _detail_row(r, diff.date, STATUS_POSTPONED, layout) for r in _sorted(diff.postponed)
         ]
     if not rows:
-        sheet.write_row(1, headers)
+        # データが無いときは見出しだけ書く
+        for column, header in enumerate(headers, start=1):
+            _write_cell(sheet, 1, column, header)
         return
-    sheet.write_table(rows, headers=headers)
-    sheet.auto_width()
-    sheet.freeze_header()
+    # 表データを二次元配列で write_range に渡す
+    matrix = [list(headers), *[[row[header] for header in headers] for row in rows]]
+    sheet.write_range(_cell_ref(1, 1) + ":" + _cell_ref(len(matrix), len(headers)), matrix)
+    _auto_width(sheet, headers, rows)
+    sheet.freeze_panes(_cell_ref(2, 1))
 
 
 def _count_by_plan_and_date(diffs: list[DailyDiff]) -> tuple[Counts, Counts]:
@@ -148,3 +159,34 @@ def _detail_row(
 def _sorted(records: list[Record]) -> list[Record]:
     """日付・種別・キーの順に並べる（毎回同じ並びで出力するため）。"""
     return sorted(records, key=lambda r: (r.date, r.plan_prefix, r.customer_id))
+
+
+def _cell_ref(row: int, col: int) -> str:
+    """(行, 列) の数値を ``A1`` 形式のセル参照に変換する。"""
+    return f"{get_column_letter(col)}{row}"
+
+
+def _write_cell(sheet: Sheet, row: int, col: int, value: object) -> None:
+    """Sheet 形式でセル位置と値を、``A1`` 形式を経由して書き込む。"""
+    sheet.write_value(_cell_ref(row, col), value)
+
+
+def _format(sheet: Sheet, row: int, col: int, **kwargs: object) -> None:
+    """Sheet 形式でセル書式（太字・表示形式）をまとめて設定する。"""
+    sheet.format(_cell_ref(row, col), **kwargs)
+
+
+def _auto_width(sheet: Sheet, headers: list[str], rows: list[dict[str, object]]) -> None:
+    """列ごとに、見出し＋行の最大文字数から列幅を見積もる。
+
+    旧 ``auto_width()`` の代替。日本語（2 幅）やかなは幅が読みにくいので、表示文字数に
+    1.2 倍の余裕を持たせた経験的な値で固定する。
+    """
+    for column, header in enumerate(headers, start=1):
+        max_length = len(str(header))
+        for row in rows:
+            value = row.get(header)
+            if value is not None:
+                max_length = max(max_length, len(str(value)))
+        # 日本語などの全角文字が混ざる可能性に備え、表示幅に余裕を持たせる
+        sheet.set_column_width(get_column_letter(column), max(max_length * 1.2, 8))

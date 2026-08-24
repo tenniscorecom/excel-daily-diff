@@ -16,7 +16,7 @@ import datetime
 import logging
 from pathlib import Path
 
-from comken.core import FileFinder, date_in_name
+from comken.core import DateFileFinder, date_in_name
 
 from src.diff import daily_diffs
 from src.exceptions import ComparisonFileNotEnoughError
@@ -62,7 +62,11 @@ def _target_files(settings: Settings) -> list[tuple[datetime.date, Path]]:
 
     期間の外のファイルまで読むと数万行 × 日数ぶん無駄になるので、必要な範囲だけに絞る。
     """
-    found = FileFinder(settings.input_folder).dated(settings.file_pattern, required=False)
+    pattern = settings.file_pattern
+    # ``dated()`` は「該当が無ければ空リスト」を返す仕様。
+    found = DateFileFinder(settings.input_folder).dated(
+        pattern.prefix, pattern.extension
+    )
     dated_files = sorted(
         (date, path) for path in found if (date := date_in_name(path.name)) is not None
     )
@@ -73,13 +77,13 @@ def _target_files(settings: Settings) -> list[tuple[datetime.date, Path]]:
     ]
     if not in_range:
         raise ComparisonFileNotEnoughError(
-            str(settings.input_folder), settings.file_pattern, len(dated_files)
+            str(settings.input_folder), f"{pattern.prefix}*{pattern.extension}", len(dated_files)
         )
     # 期間の初日ぶんを出すには、その手前のファイルが要る
     first = max(0, in_range[0] - 1)
     targets = dated_files[first : in_range[-1] + 1]
     if len(targets) < 2:
         raise ComparisonFileNotEnoughError(
-            str(settings.input_folder), settings.file_pattern, len(targets)
+            str(settings.input_folder), f"{pattern.prefix}*{pattern.extension}", len(targets)
         )
     return targets

@@ -13,7 +13,11 @@ from pathlib import Path
 from comken import config
 from comken.exceptions import ConfigSectionNotFoundError
 
-from src.exceptions import InvalidDateSettingError, InvalidMonthSettingError
+from src.exceptions import (
+    InvalidDateSettingError,
+    InvalidFilePatternError,
+    InvalidMonthSettingError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +29,43 @@ SECTION_INCLUDE_CONTAINS = "INCLUDE_CONTAINS"
 SECTION_EXCLUDE_CONTAINS = "EXCLUDE_CONTAINS"
 SECTION_INCLUDE_EXACT = "INCLUDE_EXACT"
 SECTION_EXCLUDE_EXACT = "EXCLUDE_EXACT"
+
+
+@dataclass(frozen=True)
+class FilePattern:
+    """config.ini の FILE_PATTERN（``一覧_*.xlsx`` のようなワイルドカード表記）を
+    ``DateFileFinder.dated()`` が受け取れる ``prefix`` と ``extension`` に分けたもの。"""
+
+    prefix: str
+    extension: str
+
+
+def split_file_pattern(pattern: str) -> FilePattern:
+    """``FILE_PATTERN`` を ``DateFileFinder.dated()`` 用に分割する。
+
+    ``*`` の手前を ``prefix``、最後の ``.`` 以降を ``extension`` として取り出す。
+    ``*`` が無いパターンや ``*`` が複数あるパターンは対応外（docstring に明記する）。
+    """
+    star_index = pattern.find("*")
+    if star_index < 0:
+        raise InvalidFilePatternError(
+            pattern,
+            "ワイルドカード '*' が含まれていません。",
+        )
+    if pattern.count("*") > 1:
+        raise InvalidFilePatternError(
+            pattern,
+            "ワイルドカード '*' が複数含まれています。'*' は1つだけ使えます。",
+        )
+    head = pattern[:star_index]
+    dot_index = pattern.rfind(".")
+    if dot_index < star_index:
+        # '*' の後に '.' が無いケースは拡張子の指定として読めない
+        raise InvalidFilePatternError(
+            pattern,
+            "'*' の後に拡張子（.xlsx など）がありません。",
+        )
+    return FilePattern(prefix=head, extension=pattern[dot_index + 1 :])
 
 
 @dataclass(frozen=True)
@@ -73,7 +114,7 @@ class Settings:
     """このツールが使う設定一式。"""
 
     input_folder: Path
-    file_pattern: str
+    file_pattern: FilePattern  # prefix / extension に分割済み
     start_date: datetime.date  # 集計表の横軸（ファイル名の日付）の始まり
     end_date: datetime.date  # 同じく終わり
     output_folder: Path
@@ -87,6 +128,7 @@ def load_settings() -> Settings:
     Raises:
         InvalidDateSettingError: [FILES] の日付が YYYY-MM-DD で書かれていない場合。
         InvalidMonthSettingError: [FILTER] TARGET_MONTH が YYYY-MM で書かれていない場合。
+        InvalidFilePatternError: [FILES] FILE_PATTERN の書き方が split_file_pattern() で扱えない場合。
     """
     layout = SourceLayout(
         sheet_name=str(config.SOURCE.SHEET_NAME),
@@ -106,7 +148,7 @@ def load_settings() -> Settings:
     )
     return Settings(
         input_folder=Path(config.FILES.INPUT_FOLDER),
-        file_pattern=str(config.FILES.FILE_PATTERN),
+        file_pattern=split_file_pattern(str(config.FILES.FILE_PATTERN)),
         start_date=_to_date("START_DATE", config.FILES.START_DATE),
         end_date=_to_date("END_DATE", config.FILES.END_DATE),
         output_folder=Path(config.REPORT.OUTPUT_FOLDER),
@@ -144,6 +186,10 @@ def _rules_in(section: str, is_contains: bool, is_exclude: bool) -> list[ColumnR
         return []  # 任意のセクションなので、無ければ条件なし
     rules = []
     for column, value in values.items():
+        # 新 comken のセクション名前空間は ``_section`` / ``_keys`` / ``_path`` を
+        # 内部用に持つので、絞り込みの列名候補からは外す
+        if column.startswith("_"):
+            continue
         words = _to_words(value)
         if words:  # 値が空の行は「まだ書いていない」とみなす
             rules.append(ColumnRule(column, words, is_contains, is_exclude))

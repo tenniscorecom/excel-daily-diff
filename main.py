@@ -10,7 +10,7 @@ main.py — エントリポイント
 import logging
 
 from comken.exceptions import ComkenError
-from comken.toolbox.rpa import backoffice  # イントラネットのツールなら intranet に変える
+from comken.internal.rpa import backoffice  # イントラネットのツールなら intranet に変える
 
 from src.run import run
 from src.settings import load_settings

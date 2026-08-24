@@ -2,7 +2,6 @@ import datetime
 from pathlib import Path
 
 import pytest
-from comken import config
 
 from src.exceptions import InvalidDateSettingError, InvalidMonthSettingError
 from src.settings import ColumnRule, _load_rules, _to_date, _to_year_month
@@ -29,7 +28,7 @@ def test_to_year_month_raises_for_invalid_setting(value: str) -> None:
 
 
 def test_load_rules_reads_optional_sections_and_comma_separated_words(
-    tmp_path: Path, restore_config_singleton
+    tmp_path: Path, use_config
 ) -> None:
     path = tmp_path / "rules.ini"
     path.write_text(
@@ -43,7 +42,7 @@ def test_load_rules_reads_optional_sections_and_comma_separated_words(
 """,
         encoding="utf-8",
     )
-    config.read(path)
+    use_config(path)
 
     assert _load_rules() == (
         ColumnRule("地域", ("離島", "山間部"), is_contains=True, is_exclude=False),

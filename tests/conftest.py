@@ -2,7 +2,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
-from comken import config
+from comken import Config
 from openpyxl import Workbook
 
 from src.settings import Criteria, SourceLayout
@@ -41,10 +41,18 @@ def make_book():
 
 
 @pytest.fixture
-def restore_config_singleton():
-    """一時設定を読むテストの後で comken.config の共有状態を元に戻す。"""
-    original = config._singleton
-    try:
-        yield
-    finally:
-        config._singleton = original
+def use_config(monkeypatch):
+    """テスト用の Config(path) を ``src.settings`` から見える位置に差し込む。
+
+    旧 comken は ``config._singleton`` を更新する ``config.read(path)`` だったが、
+    新 comken は Config() を毎回生成する遅延シングルトンなので、テストでは
+    ``src.settings.config`` 自体を新しいインスタンスへ差し替える。
+    """
+
+    def _use(path: Path) -> Config:
+        test_config = Config(path)
+        # ``src.settings`` の ``from comken import config`` の束縛先を上書き
+        monkeypatch.setattr("src.settings.config", test_config)
+        return test_config
+
+    return _use
