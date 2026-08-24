@@ -7,7 +7,7 @@
 毎日更新される一覧から「消えた行」「増えた行」の推移を追う、という形の業務なら
 列名を設定で合わせるだけで使えます。
 
-[comken](https://github.com/tenniscorecom/original_libs)（業務自動化用の共通ライブラリ）を
+[comken](https://github.com/tenniscorecom/comken)（業務自動化用の共通ライブラリ）を
 使った利用プロジェクトの例でもあります。
 
 ## 特徴
