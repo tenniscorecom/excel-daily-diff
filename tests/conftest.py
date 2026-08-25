@@ -16,6 +16,14 @@ def config_for_tests(monkeypatch, tmp_path):
     """テスト用の Config(path) を作って、``comken.config`` の束縛先を上書きする。"""
 
     def _use(content: str) -> Config:
+        # autouse の ``_patch_config_for_read_records`` が先に ``Config(path)`` を
+        # 作っており、 同じ ``tmp_path / "config.ini"`` に上書きしてもパス単位の
+        # キャッシュが効いて古い内容（1枚だけの SHEET_NAME）が返ってくる。
+        # テストごとに「古いキャッシュを破棄 → 新しいファイルを読む」を保証するため、
+        # ``Config(path)`` を呼ぶ直前にリセットする。
+        from comken.core.config import _reset_cached_config
+
+        _reset_cached_config()
         path = tmp_path / "config.ini"
         path.write_text(content, encoding="utf-8")
         test_config = Config(path)

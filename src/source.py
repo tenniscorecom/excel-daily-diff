@@ -12,17 +12,14 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from comken import config
+from comken.core import parse_cell_date
 from comken.exceptions import (
     ConfigSectionNotFoundError,
     ExcelColumnNotFoundError,
-    SheetNotFoundError,
 )
 from comken.toolbox.excel import Excel
 
 logger = logging.getLogger(__name__)
-
-# 「日」列が文字列で入っていた場合に受け付ける書き方
-DATE_TEXT_FORMATS = ("%Y/%m/%d", "%Y-%m-%d", "%Y年%m月%d日", "%Y/%m/%d %H:%M:%S")
 
 
 class ColumnRule(NamedTuple):
@@ -74,14 +71,14 @@ def read_records(
     broken_dates = 0
     row_count = 0
     with Excel(path, read_only=True) as excel:
-        sheet_name = _select_sheet_name(excel, sheet_names)
+        sheet_name = excel.find_sheet(*sheet_names)
         rows = _read_dict_rows(excel, sheet_name, rules, header_row, required_columns)
         for row in rows:
             row_count += 1
             customer_id = _customer_id(row.get(key_column))
             if not customer_id:
                 continue
-            date = _to_date(row.get(date_column))
+            date = parse_cell_date(row.get(date_column))
             if date is None:
                 broken_dates += 1
                 continue
@@ -183,26 +180,6 @@ def _source_sheet_names() -> tuple[str, ...]:
     return (str(value).strip(),)
 
 
-def _select_sheet_name(excel: Excel, candidates: tuple[str, ...]) -> str:
-    """候補を上から順に試し、最初に見つかったシート名を返す。
-
-    候補が全部見つからないときは、最後の ``SheetNotFoundError`` をそのまま送出する
-    （メッセージに実在するシート名の一覧が含まれるので、利用者が config を直せる）。
-    候補が空のときは、ブックに存在するシートを一覧にした ``SheetNotFoundError`` を投げる。
-    """
-    last_error: SheetNotFoundError | None = None
-    for name in candidates:
-        try:
-            excel.sheet(name)
-            return name
-        except SheetNotFoundError as error:
-            last_error = error
-    if last_error is not None:
-        raise last_error
-    # 候補が空（config の書き方が悪い）のときは、実在するシートを一覧にした例外で知らせる
-    raise SheetNotFoundError("", excel._workbook.sheetnames)  # noqa: SLF001
-
-
 def _source_header_row() -> int:
     return int(config.SOURCE.HEADER_ROW)
 
@@ -294,23 +271,6 @@ def _plan_prefix(value: object, prefixes: tuple[str, ...]) -> str:
         if plan.startswith(prefix):
             return prefix
     return ""
-
-
-def _to_date(value: object) -> datetime.date | None:
-    """セルの値を日付にする。空セルや日付として読めない値は None。"""
-    if isinstance(value, datetime.datetime):
-        return value.date()
-    if isinstance(value, datetime.date):
-        return value
-    text = _text(value)
-    if not text:
-        return None
-    for date_format in DATE_TEXT_FORMATS:
-        try:
-            return datetime.datetime.strptime(text, date_format).date()  # noqa: DTZ007
-        except ValueError:
-            continue
-    return None
 
 
 def _text(value: object) -> str:
