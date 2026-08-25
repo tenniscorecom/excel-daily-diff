@@ -5,8 +5,12 @@ src/run.py — 処理の本体
 集計範囲を決め、日ごとの延期・積み上げを集計する。
 
 日付が2種類出てくるので混同しないこと。
-    ファイル名の日付 … 集計表の横軸。いつ時点の一覧かを表す
+    ファイル名の日付 … いつ時点の一覧かを表す（``一覧_YYYYMMDD.xlsx`` の YYYYMMDD）
     案件の日付      … 絞り込みにだけ使う。対象月に入っているかを見る
+
+集計表の横軸は **業務日**（= ファイル名の日付 - 1日）。入力ファイルは
+「前日終了時点」のデータなので、``一覧_20260825.xlsx`` の中身は 8/24 終了時点の
+状態であり、``一覧_20260824.xlsx`` との差分は「8/24 に動いたぶん」になる。
 """
 
 import datetime
@@ -64,9 +68,10 @@ def run(today: datetime.date | None = None) -> Path:
         logger.info("[条件が変わりました] 過去ぶんは古い条件で数えられているため、全期間を作り直します")
         logger.info("--- 現在の条件 ---\n%s", current_conditions)
 
-    # 下限：実行日の年の1月1日。それより古いファイルは対象外（古いファイルはシート構造が違うことがある）
+    # 下限：実行日の年の1月1日（業務日）。それより古いファイルは対象外
+    # （古いファイルはシート構造が違うことがある）
     range_floor = _range_floor(today)
-    # 上限：実行日。今日より後の日付のファイルは対象外
+    # 上限：実行日（業務日）。今日より後の日付のファイルは対象外
     range_ceiling = today
 
     last_date = last_date_in_csv(existing) if existing else None
@@ -75,11 +80,18 @@ def run(today: datetime.date | None = None) -> Path:
         start_date = range_floor
         run_mode = "条件変更による全期間の作り直し" if conditions_changed else "初回"
     else:
-        # 増分計算（既存 CSV の最後の日付の次の日）が下限より古いなら下限を採用
+        # 増分計算。CSV の最後の業務日が D のとき、次に追加する列は業務日 D+1。
+        # 業務日 D+1 の列を作るには「ファイル日付 D+2」のファイル（D+1 終了時点）が要る。
+        # 業務日基準の ``start_date`` は D+1（= ``last_date + 1日``）。``_files_in_range``
+        # の中でファイル日付 D+2 起点に変換される。
         start_date = max(last_date + datetime.timedelta(days=1), range_floor)
         run_mode = "増分"
 
-    end_date = min(dated_files[-1][0], range_ceiling)
+    # 業務日の end_date = dated_files の最新ファイル日付 - 1日
+    end_date = min(
+        dated_files[-1][0] - datetime.timedelta(days=1),
+        range_ceiling,
+    )
     targets, has_predecessor = _files_in_range(dated_files, start_date, end_date)
     if not targets:
         logger.warning(
@@ -177,6 +189,9 @@ def _log_run_header(
     「入力フォルダ／パターン／対象月／実行モード／読み込み範囲」と、
     「フォルダ全件のうち何件読み、何件読み飛ばしたか」を1セットにして出す。
     範囲外から比較相手として読む1ファイルがあれば、そのファイル名を別行で明示する。
+
+    ``start_date`` / ``end_date`` は業務日。``targets`` の ``date`` はファイル日付
+    （= 業務日 + 1日）なので、件数カウントで ``+1日`` して比較する。
     """
     logger.info("入力フォルダ: %s（パターン: %s）", input_folder, config.FILES.FILE_PATTERN)
     logger.info(
@@ -184,9 +199,11 @@ def _log_run_header(
         ", ".join(f"{y:04d}-{m:02d}" for y, m in target_months),
     )
     logger.info("実行モード: %s", run_mode)
-    logger.info("読み込み範囲: %s 〜 %s", start_date, end_date)
+    logger.info("読み込み範囲（業務日）: %s 〜 %s", start_date, end_date)
 
-    in_range_count = sum(1 for date, _ in targets if date >= start_date)
+    # 業務日 start_date に対応するファイル日付は start_date + 1日
+    in_range_file_start = start_date + datetime.timedelta(days=1)
+    in_range_count = sum(1 for date, _ in targets if date >= in_range_file_start)
     skipped_count = len(dated_files) - in_range_count
 
     summary = (
@@ -195,7 +212,10 @@ def _log_run_header(
     )
     if has_predecessor:
         predecessor_name = targets[0][1].name
-        summary += f"。{start_date} の比較相手として、範囲外から 1 ファイル追加で読みます（{predecessor_name}）"
+        summary += (
+            f"。{start_date}（業務日）の比較相手として、"
+            f"範囲外から 1 ファイル追加で読みます（{predecessor_name}）"
+        )
     else:
         summary += "（比較相手はありません）"
     logger.info("%s", summary)
@@ -249,11 +269,16 @@ def _files_in_range(
 ) -> tuple[list[tuple[datetime.date, Path]], bool]:
     """期間内 + 範囲の最初のファイルの直前1ファイルを取り出して返す。
 
+    ``start`` と ``end`` は **業務日**。``dated_files`` の ``date`` は **ファイル日付**
+    （= 業務日 + 1日）なので、内部で ``+1日`` してファイル日付に変換して比較する。
     戻り値は ``(対象ファイルのリスト, 直前ファイルが範囲外にあったか)``。
     直前ファイルが ``dated_files`` の先頭に達して範囲外に無いときは False を返し、
     そのときは呼び出し側で集計をスキップする（比較相手がいないため）。
     """
-    in_range = [i for i, (date, _) in enumerate(dated_files) if start <= date <= end]
+    # 業務日 → ファイル日付 に変換して比較する
+    start_file = start + datetime.timedelta(days=1)
+    end_file = end + datetime.timedelta(days=1)
+    in_range = [i for i, (date, _) in enumerate(dated_files) if start_file <= date <= end_file]
     if not in_range:
         return [], False
     has_predecessor = in_range[0] > 0

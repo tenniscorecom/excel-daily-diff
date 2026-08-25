@@ -25,11 +25,18 @@ def test_compute_counts_compares_adjacent_files_and_reads_each_once() -> None:
 
     added = counts.by_row[(target_months[0], "標準", STATUS_ADDED)]
     postponed = counts.by_row[(target_months[0], "標準", STATUS_POSTPONED)]
-    assert added[datetime.date(2026, 4, 21)] == 1  # "c"
-    assert added[datetime.date(2026, 4, 22)] == 1  # "d"
-    assert postponed[datetime.date(2026, 4, 21)] == 1  # "a"
-    assert postponed[datetime.date(2026, 4, 22)] == 1  # "b"
-    assert counts.compared_dates == {datetime.date(2026, 4, 21), datetime.date(2026, 4, 22)}
+    # 業務日 = ファイル日付 - 1日。
+    # 一覧_20260421.xlsx(業務日 4/20) vs 一覧_20260420.xlsx(業務日 4/19):
+    #   c は 4/20 にのみ存在 → 業務日 4/20 に積み上げ 1
+    #   a は 4/19 にのみ存在 → 業務日 4/20 に延期 1
+    assert added[datetime.date(2026, 4, 20)] == 1  # "c"
+    assert postponed[datetime.date(2026, 4, 20)] == 1  # "a"
+    # 一覧_20260422.xlsx(業務日 4/21) vs 一覧_20260421.xlsx(業務日 4/20):
+    #   d は 4/21 にのみ存在 → 業務日 4/21 に積み上げ 1
+    #   b は 4/20 にのみ存在 → 業務日 4/21 に延期 1
+    assert added[datetime.date(2026, 4, 21)] == 1  # "d"
+    assert postponed[datetime.date(2026, 4, 21)] == 1  # "b"
+    assert counts.compared_dates == {datetime.date(2026, 4, 20), datetime.date(2026, 4, 21)}
     assert [call.args[0] for call in reader.call_args_list] == paths
 
 
@@ -53,9 +60,10 @@ def test_compute_counts_only_buckets_into_target_months() -> None:
     with patch("src.diff.read_records", side_effect=records):
         counts = compute_counts(dated_files, [(2026, 4), (2026, 5)], ("標準",), ("完了",), ())
 
-    # 4月ぶんの行: apr が 5/2 に消えた → 5/2 に「延期 1」
-    assert counts.by_row[((2026, 4), "標準", STATUS_POSTPONED)][datetime.date(2026, 5, 2)] == 1
-    # 5月の行は「5/2 にも "may" があるので変化なし」→ 集計0件
+    # 4月ぶんの行: 一覧_20260501.xlsx(業務日 4/30) vs 一覧_20260502.xlsx(業務日 5/1)
+    # apr が 5/1 に消えた → 業務日 5/1 に「延期 1」
+    assert counts.by_row[((2026, 4), "標準", STATUS_POSTPONED)][datetime.date(2026, 5, 1)] == 1
+    # 5月の行は「5/1 にも "may" があるので変化なし」→ 集計0件
     assert (2026, 5, "標準", STATUS_ADDED) not in counts.by_row
     assert (2026, 5, "標準", STATUS_POSTPONED) not in counts.by_row
 
@@ -79,5 +87,7 @@ def test_compute_counts_groups_by_plan_prefix() -> None:
     with patch("src.diff.read_records", side_effect=records):
         counts = compute_counts(dated_files, [(2026, 4)], ("標準", "上位"), ("完了",), ())
 
-    assert counts.by_row[((2026, 4), "上位", STATUS_POSTPONED)][datetime.date(2026, 4, 22)] == 1
+    # 一覧_20260421.xlsx(業務日 4/20) vs 一覧_20260422.xlsx(業務日 4/21):
+    # b が消えた → 業務日 4/21 に 上位 の延期 1
+    assert counts.by_row[((2026, 4), "上位", STATUS_POSTPONED)][datetime.date(2026, 4, 21)] == 1
     assert (2026, 4, "標準", STATUS_ADDED) not in counts.by_row

@@ -5,12 +5,19 @@ src/diff.py — 日付順に並んだファイルを、隣り合う日どうし�
 ある日の値は、その日のファイルと**その直前のファイル**を比べたもの。
 土日祝でファイルが飛んでいれば、飛んだ手前のファイルが比較相手になる。
 
-戻り値は ``Counts`` —— 「(対象月, 種別, 判定) をキーに、日付ごとの件数 dict を持つ」
-形に直接してある。``DailyDiff`` のような中間データクラスは持たない。
+入力ファイル ``一覧_YYYYMMDD.xlsx`` は**前日終了時点**のデータなので、
+``一覧_20260825.xlsx`` の中身は 8/24 終了時点の状態。突き合わせの結果は
+「8/24 に動いたぶん」、つまり **業務日 = ファイル日付 - 1日** が指す日に
+入る（集計表の横軸と一致させるため）。
+
+戻り値は ``Counts`` —— 「(対象月, 種別, 判定) をキーに、**業務日**ごとの
+件数 dict を持つ」形に直接してある。``DailyDiff`` のような中間データクラスは
+持たない。
 
 ``on_day_done`` を渡すと、日1日ぶんの集計が終わるたびに呼ばれる。
 長い処理の途中で落ちても、それまでの計算結果を外に出せるようにするための
-フック（``run.py`` が CSV 書き出しに使う）。
+フック（``run.py`` が CSV 書き出しに使う）。``_date`` はファイル日付を
+そのまま渡しているので、保存側が必要なら業務日に直して使う。
 """
 
 import datetime
@@ -99,17 +106,21 @@ def compute_counts(
                 current_by_month[month][record.customer_id] = record
 
         if previous_by_month is not None:
+            # 業務日 = ファイル日付 - 1日（入力ファイルは前日終了時点のデータ）。
+            # ``compared_dates`` も業務日で持つ。``on_day_done`` には元の
+            # ファイル日付も渡しておく（保存側でログ用に使える）。
+            business_date = date - datetime.timedelta(days=1)
             for month in target_months:
                 previous_records = previous_by_month[month]
                 current_records = current_by_month[month]
                 added_keys = current_records.keys() - previous_records.keys()
                 postponed_keys = previous_records.keys() - current_records.keys()
                 for key in added_keys:
-                    _inc(by_row, month, current_records[key].plan_prefix, STATUS_ADDED, date)
+                    _inc(by_row, month, current_records[key].plan_prefix, STATUS_ADDED, business_date)
                 for key in postponed_keys:
-                    _inc(by_row, month, previous_records[key].plan_prefix, STATUS_POSTPONED, date)
-            compared_dates.add(date)
-            _log_daily_diff(date, target_months, by_row, previous_path, path)
+                    _inc(by_row, month, previous_records[key].plan_prefix, STATUS_POSTPONED, business_date)
+            compared_dates.add(business_date)
+            _log_daily_diff(business_date, date, target_months, by_row, previous_path, path)
             if on_day_done is not None:
                 on_day_done(by_row, compared_dates, date)
 
@@ -126,7 +137,8 @@ def compute_counts(
 
 
 def _log_daily_diff(
-    date: datetime.date,
+    business_date: datetime.date,
+    file_date: datetime.date,
     target_months: list[tuple[int, int]],
     by_row: dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]],
     previous_path: Path | None,
@@ -134,7 +146,9 @@ def _log_daily_diff(
 ) -> None:
     """1日ぶんの集計結果を INFO で出す。対象月が複数のときは対象月ごとにも出す。
 
-    ファイル2つの名前は ``(一覧_YYYYMMDD.xlsx → 一覧_YYYYMMDD.xlsx)`` で後ろに添える。
+    入力ファイルは「前日終了時点」のデータなので、業務日（= ``file_date - 1日``）と
+    ファイル名が1日ずれる。ログでは「業務日」を主軸として出し、ファイル2つの
+    名前は ``(一覧_YYYYMMDD.xlsx → 一覧_YYYYMMDD.xlsx)`` で後ろに添える。
     対象月が1つのときは ``[YYYY-MM]`` を省略し、複数あるときは各行に付ける。
     """
     show_month_suffix = len(target_months) > 1
@@ -142,16 +156,25 @@ def _log_daily_diff(
     current_name = current_path.name
     file_pair = f"（{previous_name} → {current_name}）"
     for month in target_months:
-        added = _sum_for(by_row, month, STATUS_ADDED, date)
-        postponed = _sum_for(by_row, month, STATUS_POSTPONED, date)
+        added = _sum_for(by_row, month, STATUS_ADDED, business_date)
+        postponed = _sum_for(by_row, month, STATUS_POSTPONED, business_date)
         suffix = f" [{month[0]:04d}-{month[1]:02d}]" if show_month_suffix else ""
         logger.info(
-            "%s%s: 積み上げ %d 件 / 延期 %d 件%s",
-            date.isoformat(),
+            "業務日 %s%s: 積み上げ %d 件 / 延期 %d 件%s",
+            business_date.isoformat(),
             suffix,
             added,
             postponed,
             file_pair,
+        )
+    if file_date != business_date:
+        # 業務日とファイル名が1日ずれていることを明示（混同防止）。
+        logger.debug(
+            "業務日 %s = ファイル %s の前日終了時点（%s → %s）",
+            business_date.isoformat(),
+            file_date.isoformat(),
+            previous_name,
+            current_name,
         )
 
 
