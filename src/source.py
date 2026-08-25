@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from comken import config
-from comken.exceptions import ConfigSectionNotFoundError, ExcelColumnNotFoundError
+from comken.exceptions import (
+    ConfigSectionNotFoundError,
+    ExcelColumnNotFoundError,
+    SheetNotFoundError,
+)
 from comken.toolbox.excel import Excel
 
 logger = logging.getLogger(__name__)
@@ -61,7 +65,8 @@ def read_records(
     broken_dates = 0
     row_count = 0
     with Excel(path, read_only=True) as excel:
-        rows = _read_dict_rows(excel, rules)
+        sheet_name = _select_sheet_name(excel, _source_sheet_names())
+        rows = _read_dict_rows(excel, sheet_name, rules)
         for row in rows:
             row_count += 1
             customer_id = _customer_id(row.get(_source_key_column()))
@@ -105,9 +110,10 @@ def read_records(
             broken_dates,
         )
     logger.info(
-        "%s%s: 条件に合う行 %d 件",
+        "%s%s[%s]: 条件に合う行 %d 件",
         _progress_prefix(progress),
         path.name,
+        sheet_name,
         len(records),
     )
     return records
@@ -155,8 +161,37 @@ def _to_words(value: object) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in items if str(item).strip())
 
 
-def _source_sheet_name() -> str:
-    return str(config.SOURCE.SHEET_NAME)
+def _source_sheet_names() -> tuple[str, ...]:
+    """``[SOURCE] SHEET_NAME`` の候補一覧を config に書いた順に返す。
+
+    ``SHEET_NAME = Sheet1`` のように1つだけ書いた古い形式もそのまま動くように、
+    文字列で書かれた場合は1要素のタプルに変換する。
+    ``[a, b]`` のようにリストで書いた場合は順序を保ったまま要素を返す。
+    """
+    value = config.SOURCE.SHEET_NAME
+    if isinstance(value, list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    return (str(value).strip(),)
+
+
+def _select_sheet_name(excel: Excel, candidates: tuple[str, ...]) -> str:
+    """候補を上から順に試し、最初に見つかったシート名を返す。
+
+    候補が全部見つからないときは、最後の ``SheetNotFoundError`` をそのまま送出する
+    （メッセージに実在するシート名の一覧が含まれるので、利用者が config を直せる）。
+    候補が空のときは、ブックに存在するシートを一覧にした ``SheetNotFoundError`` を投げる。
+    """
+    last_error: SheetNotFoundError | None = None
+    for name in candidates:
+        try:
+            excel.sheet(name)
+            return name
+        except SheetNotFoundError as error:
+            last_error = error
+    if last_error is not None:
+        raise last_error
+    # 候補が空（config の書き方が悪い）のときは、実在するシートを一覧にした例外で知らせる
+    raise SheetNotFoundError("", excel._workbook.sheetnames)  # noqa: SLF001
 
 
 def _source_header_row() -> int:
@@ -180,15 +215,17 @@ def _source_kind_column() -> str:
 
 
 def _read_dict_rows(
-    excel: Excel, rules: tuple[ColumnRule, ...]
+    excel: Excel, sheet_name: str, rules: tuple[ColumnRule, ...]
 ) -> list[dict[str, Any]]:
     """見出しを検証し、1行ずつ辞書化したリストを返す。
 
     Excel の見出しには「備考 」のように空白が紛れ込むことがあるため、
     読み込み側で見出しの前後の空白を落とす（config.ini 側はキー名の空白が落ちる）。
+    ``sheet_name`` は ``_select_sheet_name`` で確定済みのものを使う（候補の上から
+    試して見つかったもの）。
     """
     raw_rows = excel.read_computed_rows_as_dicts(
-        _source_sheet_name(), header_row=_source_header_row()
+        sheet_name, header_row=_source_header_row()
     )
     if not raw_rows:
         return []
