@@ -1,11 +1,12 @@
 import datetime
+import logging
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from comken.toolbox.csv import CSV
 
-from src.run import OUTPUT_NAME, _range_floor, _target_months, run
+from src.run import CONDITIONS_NAME, OUTPUT_NAME, _range_floor, _target_months, run
 
 
 def _config_text(input_folder: Path, output_folder: Path) -> str:
@@ -495,6 +496,205 @@ def test_run_skips_when_no_files_in_range(
     # ファイルは何も開かれない
     assert opened == []
     assert result == output_folder / OUTPUT_NAME
+
+
+def test_run_writes_csv_after_each_day(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """1日ぶん計算するたびに CSV が書き出される（N 件ごとに区切らない）。"""
+    input_folder, output_folder = setup_run(tmp_path)
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260423.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+
+    save_calls: list[Path] = []
+    original_write_csv = __import__("src.report", fromlist=["write_csv"]).write_csv
+
+    def _spy_write_csv(path, by_row, dates, row_keys):
+        save_calls.append(path)
+        original_write_csv(path, by_row, dates, row_keys)
+
+    with patch("src.run.write_csv", side_effect=_spy_write_csv):
+        run(datetime.date(2026, 4, 25))
+
+    # targets = [12/20(predecessor), 2/28, 4/20, 4/21, 4/22, 4/23] のうち、
+    # 比較が起きるのは2回目以降なので 5 回（2/28, 4/20, 4/21, 4/22, 4/23）。
+    assert len(save_calls) == 5
+    assert all(p == output_folder / OUTPUT_NAME for p in save_calls)
+
+
+def test_run_keeps_partial_progress_when_read_fails_midway(
+    tmp_path: Path, make_book, setup_run, caplog
+) -> None:
+    """読み込みが途中で失敗しても、それまでに書き出した分は CSV に残っている。"""
+    input_folder, output_folder = setup_run(tmp_path)
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260423.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+
+    real_reader = __import__("src.diff", fromlist=["read_records"]).read_records
+    call_count = {"n": 0}
+
+    def _fail_on_sixth(path, *args, **kwargs):
+        call_count["n"] += 1
+        # 6回目の読み込み（=4/23）で例外。5回目までに4回保存されているはず。
+        if call_count["n"] == 6:
+            raise RuntimeError("simulated read failure")
+        return real_reader(path, *args, **kwargs)
+
+    csv_path = output_folder / OUTPUT_NAME
+    with caplog.at_level(logging.INFO):
+        with pytest.raises(RuntimeError):
+            with patch("src.diff.read_records", side_effect=_fail_on_sixth):
+                run(datetime.date(2026, 4, 25))
+
+    # 例外までに書き出した CSV にはそこまでの分の列が残っている
+    assert csv_path.exists()
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+    headers = list(rows[0].keys())
+    date_headers = [h for h in headers if h not in ("対象月", "種別", "判定")]
+    # 4/22 は保存済み（5回目の保存）。4/23 は保存されていない
+    assert "2026-04-22" in date_headers
+    assert "2026-04-23" not in date_headers
+
+
+def test_run_resumes_from_last_csv_date_after_crash(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """途中で落ちても、もう一度実行すると残っている最後の日付の次の日から再開する。"""
+    input_folder, output_folder = setup_run(tmp_path)
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260423.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+
+    real_reader = __import__("src.diff", fromlist=["read_records"]).read_records
+    call_count = {"n": 0}
+
+    def _fail_on_fifth(path, *args, **kwargs):
+        call_count["n"] += 1
+        # 5回目（=4/22 の read）で例外。3回保存されているはず
+        # （2/28, 4/20, 4/21）。4/22, 4/23 はまだ保存されていない。
+        if call_count["n"] == 5:
+            raise RuntimeError("simulated crash")
+        return real_reader(path, *args, **kwargs)
+
+    # 1回目: 5ファイル目でクラッシュ
+    with pytest.raises(RuntimeError):
+        with patch("src.diff.read_records", side_effect=_fail_on_fifth):
+            run(datetime.date(2026, 4, 25))
+
+    csv_path = output_folder / OUTPUT_NAME
+    assert csv_path.exists()
+    with CSV(csv_path) as csv:
+        first_rows = list(csv.read())
+    first_headers = [h for h in first_rows[0].keys() if h not in ("対象月", "種別", "判定")]
+    # 1回目の保存：2/28, 4/20, 4/21 まで
+    assert "2026-04-21" in first_headers
+    # 4/22, 4/23 はまだ保存されていない
+    assert "2026-04-22" not in first_headers
+    first_4_21 = _cell(first_rows, "2026-04", "標準", "積み上げ", "2026-04-21")
+
+    # 2回目: そのまま再開（モック解除）
+    run(datetime.date(2026, 4, 25))
+
+    with CSV(csv_path) as csv:
+        second_rows = list(csv.read())
+    second_headers = [h for h in second_rows[0].keys() if h not in ("対象月", "種別", "判定")]
+    # 4/22, 4/23 まで書き込まれている
+    assert "2026-04-22" in second_headers
+    assert "2026-04-23" in second_headers
+    # 4/21 の値は変わらない
+    second_4_21 = _cell(second_rows, "2026-04", "標準", "積み上げ", "2026-04-21")
+    assert second_4_21 == first_4_21
+
+
+def test_run_writes_conditions_file_on_first_save_even_if_run_crashes(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """1度目の保存の時点で条件ファイルを書いている（途中で落ちても次回が再開できる）。"""
+    input_folder, output_folder = setup_run(tmp_path)
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+
+    real_reader = __import__("src.diff", fromlist=["read_records"]).read_records
+    call_count = {"n": 0}
+
+    def _fail_on_fifth(path, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 5:
+            raise RuntimeError("simulated crash")
+        return real_reader(path, *args, **kwargs)
+
+    conditions_path = output_folder / CONDITIONS_NAME
+    with pytest.raises(RuntimeError):
+        with patch("src.diff.read_records", side_effect=_fail_on_fifth):
+            run(datetime.date(2026, 4, 25))
+
+    # 条件ファイルが書かれている（=初回保存より後に落ちた）
+    assert conditions_path.exists()
+    assert "KINDS" in conditions_path.read_text(encoding="utf-8")
+
+
+def test_run_does_not_full_rebuild_when_conditions_change_crash_in_middle(
+    tmp_path: Path, make_book, config_for_tests, caplog
+) -> None:
+    """条件変更による作り直しの途中で落ちても、次回は作り直しにならず続きから再開する。"""
+    input_folder = tmp_path / "input"
+    output_folder = tmp_path / "output"
+    input_folder.mkdir()
+    output_folder.mkdir()
+    config_for_tests(_config_text(input_folder, output_folder))
+
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260423.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+
+    # 条件を変えてからクラッシュさせる（作り直しの途中で落ちる）
+    config_for_tests(_config_text(input_folder, output_folder).replace(
+        "KINDS = [完了, 予定]", "KINDS = [完了]"
+    ))
+    real_reader = __import__("src.diff", fromlist=["read_records"]).read_records
+    call_count = {"n": 0}
+
+    def _fail_on_fifth(path, *args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 5:
+            raise RuntimeError("simulated rebuild crash")
+        return real_reader(path, *args, **kwargs)
+
+    with pytest.raises(RuntimeError):
+        with patch("src.diff.read_records", side_effect=_fail_on_fifth):
+            run(datetime.date(2026, 4, 25))
+
+    csv_path = output_folder / OUTPUT_NAME
+    conditions_path = output_folder / CONDITIONS_NAME
+    assert csv_path.exists()
+    assert conditions_path.exists()
+
+    # 再実行：条件は変えず、増分計算として動く。
+    # 「実行モード: 増分」が出ること（＝全期間を作り直していない）で確認する。
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        run(datetime.date(2026, 4, 25))
+
+    mode_logs = [r.message for r in caplog.records if r.message.startswith("実行モード:")]
+    assert mode_logs == ["実行モード: 増分"]
 
 
 def _cell(

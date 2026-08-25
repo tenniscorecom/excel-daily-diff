@@ -15,8 +15,9 @@ from pathlib import Path
 
 from comken import config
 from comken.core import DateFileFinder, date_in_name, today as _today
+from comken.core.files import atomic_write
 
-from src.diff import compute_counts
+from src.diff import ByRow, DaySavedCallback, compute_counts
 from src.report import last_date_in_csv, read_existing, write_csv
 from src.source import load_rules
 
@@ -107,6 +108,16 @@ def run(today: datetime.date | None = None) -> Path:
         has_predecessor=has_predecessor,
     )
 
+    # 既存 CSV に残っている日付列（再開時に過去側の列が消えないように）。
+    # 毎回保存時に ``start_date`` から「直近で比較が終わった日」までの range と
+    # 合併して列見出しを作る（未比較の区間があると再開位置がズレるため）。
+    existing_dates = _dates_from_existing(existing)
+
+    # 書き出す行の (対象月, 種別) の組を呼び出し側で組み立てて渡す。
+    row_keys = [(f"{month[0]:04d}-{month[1]:02d}", plan)
+                for month in target_months
+                for plan in plan_prefixes]
+
     counts = compute_counts(
         targets,
         target_months,
@@ -114,24 +125,16 @@ def run(today: datetime.date | None = None) -> Path:
         kinds,
         rules,
         range_start=start_date,
+        on_day_done=_make_day_saver(
+            output_path=output_path,
+            conditions_path=conditions_path,
+            current_conditions=current_conditions,
+            start_date=start_date,
+            existing_dates=existing_dates,
+            row_keys=row_keys,
+        ),
     )
 
-    # 列として並べる全日付。開始日から終了日まで1日も飛ばさず、
-    # 既存 CSV の日付列も残す（増分計算で以前の列が消えないように）。
-    dates = _build_dates(start_date, end_date, existing, counts.compared_dates)
-
-    # 書き出す行の (対象月, 種別) の組を呼び出し側で組み立てて渡す。
-    row_keys = [(f"{month[0]:04d}-{month[1]:02d}", plan)
-                for month in target_months
-                for plan in plan_prefixes]
-
-    write_csv(
-        output_path,
-        counts.by_row,
-        dates,
-        row_keys,
-    )
-    _write_text(conditions_path, current_conditions)
     logger.info(
         "%s 〜 %s のうち %d 日ぶんを比較しました（対象月: %s）",
         start_date,
@@ -207,24 +210,6 @@ def _range_floor(today: datetime.date) -> datetime.date:
     直前1ファイルだけ例外的に読まれる。
     """
     return datetime.date(today.year, 1, 1)
-
-
-def _build_dates(
-    start: datetime.date,
-    end: datetime.date,
-    existing: list[dict[str, object]],
-    compared_dates: set[datetime.date],
-) -> list[tuple[datetime.date, bool]]:
-    """列として並べる日付を作る。
-
-    開始日から終了日まで1日も飛ばさず、既存 CSV の日付列も追加する。
-    今日比較した日は ``True``（``"0"`` を入れる対象）、履歴は ``False``
-    （既存値があればそのまま、空なら空セル）。
-    """
-    range_dates = _date_range(start, end)
-    existing_dates = _dates_from_existing(existing)
-    all_dates = sorted(set(range_dates) | set(existing_dates))
-    return [(d, d in compared_dates) for d in all_dates]
 
 
 def _dates_from_existing(existing: list[dict[str, object]]) -> list[datetime.date]:
@@ -308,5 +293,57 @@ def _read_text(path: Path) -> str | None:
 
 
 def _write_text(path: Path, content: str) -> None:
+    """テキストファイルを書き込む。途中保存と組み合わせるため、原子的書き出しにする。
+
+    ``os.replace`` で一括置換するため、書き出し中に落ちても書きかけの状態で
+    残らない（部分的に書き込まれた状態だと、次回起動時に内容が壊れたように見える）。
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    with atomic_write(path) as tmp_path:
+        tmp_path.write_text(content, encoding="utf-8")
+
+
+def _make_day_saver(
+    *,
+    output_path: Path,
+    conditions_path: Path,
+    current_conditions: str,
+    start_date: datetime.date,
+    existing_dates: list[datetime.date],
+    row_keys: list[tuple[str, str]],
+) -> DaySavedCallback:
+    """``compute_counts`` の ``on_day_done`` フックを組み立てる。
+
+    日1日ぶんの突き合わせが終わるたびに呼ばれ、ここまでの累積状態を CSV へ
+    書き出す。条件ファイルは**最初の保存と同時に**1回だけ書く（途中で落ちても、
+    次回が「条件は変わっていない」と判定できるように）。
+
+    CSV は少量のデータ（8行 × 数百列で数KB）なので、毎回まるごと書き直しても
+    Excel 1ファイルの読み込み（数万行）に比べて無視できる。N 件ごとに保存する
+    ような間隔の定数は、ここでは意図的に持たない。
+
+    ただし、保存のたびに ``end_date`` まで全部の列を書き出すと、未比較の区間も
+    列として出てしまい、``last_date_in_csv`` が本来の位置より先を指してしまう
+    （= 再開時に未処理の日を飛ばしてしまう）。そこで、毎回 ``start_date`` から
+    「この保存までに比較した最新の日」までの range だけを列にする。
+    """
+    conditions_written = False
+
+    def _save(
+        by_row: ByRow,
+        compared_dates: set[datetime.date],
+        _date: datetime.date,
+    ) -> None:
+        nonlocal conditions_written
+        last_compared = max(compared_dates)  # 1日ぶん終わった直後なので必ず空でない
+        range_dates = _date_range(start_date, last_compared)
+        # この保存時点で既に比較済みの日だけ ``True`` にする。比較済みの日は
+        # 「ファイルはあったが件数が0」を ``"0"`` で表す対象になる。
+        all_dates = sorted(set(range_dates) | set(existing_dates))
+        dates = [(d, d in compared_dates) for d in all_dates]
+        write_csv(output_path, by_row, dates, row_keys)
+        if not conditions_written:
+            _write_text(conditions_path, current_conditions)
+            conditions_written = True
+
+    return _save

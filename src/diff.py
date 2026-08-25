@@ -7,16 +7,31 @@ src/diff.py — 日付順に並んだファイルを、隣り合う日どうし�
 
 戻り値は ``Counts`` —— 「(対象月, 種別, 判定) をキーに、日付ごとの件数 dict を持つ」
 形に直接してある。``DailyDiff`` のような中間データクラスは持たない。
+
+``on_day_done`` を渡すと、日1日ぶんの集計が終わるたびに呼ばれる。
+長い処理の途中で落ちても、それまでの計算結果を外に出せるようにするための
+フック（``run.py`` が CSV 書き出しに使う）。
 """
 
 import datetime
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import NamedTuple
 
 from src.source import ColumnRule, Record, read_records
 
 logger = logging.getLogger(__name__)
+
+
+# ``by_row`` のキー・値の型。``Counts`` と ``on_day_done`` のシグネチャで
+# 共有するため NamedTuple の外に置く。
+ByRow = dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]]
+
+# 1日ぶん集計が終わったあとに呼ばれるフック。``by_row`` と ``compared_dates`` は
+# ミュータブルで、ここまでの累積状態をそのまま渡す。書き出し側でファイルに
+# 落とせば、途中で例外が出ても途中までが残る。
+DaySavedCallback = Callable[[ByRow, set[datetime.date], datetime.date], None]
 
 
 class Counts(NamedTuple):
@@ -28,7 +43,7 @@ class Counts(NamedTuple):
     """
 
     compared_dates: set[datetime.date]
-    by_row: dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]]
+    by_row: ByRow
 
 
 STATUS_ADDED = "積み上げ"
@@ -42,6 +57,7 @@ def compute_counts(
     kinds: tuple[str, ...],
     rules: tuple[ColumnRule, ...],
     range_start: datetime.date | None = None,
+    on_day_done: DaySavedCallback | None = None,
 ) -> Counts:
     """日付の古い順に並んだファイルを、隣り合う組で突き合わせ、対象月ごとに数える。
 
@@ -50,8 +66,11 @@ def compute_counts(
     ``range_start`` を渡すと、範囲内のファイルに対して ``(n/total)`` の
     進捗をログに出す。範囲外（比較相手として例外的に読む1ファイル）は
     進捗ログの対象外。
+    ``on_day_done`` を渡すと、日1日ぶんの突き合わせが終わるたびに呼ばれる。
+    ``by_row`` と ``compared_dates`` はミュータブルで、ここまでの累積状態を
+    そのまま渡す（呼ぶ側でファイルへ書き出せば、途中で落ちても途中までが残る）。
     """
-    by_row: dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]] = {}
+    by_row: ByRow = {}
     compared_dates: set[datetime.date] = set()
     previous_by_month: dict[tuple[int, int], dict[str, Record]] | None = None
     previous_path: Path | None = None
@@ -91,6 +110,8 @@ def compute_counts(
                     _inc(by_row, month, previous_records[key].plan_prefix, STATUS_POSTPONED, date)
             compared_dates.add(date)
             _log_daily_diff(date, target_months, by_row, previous_path, path)
+            if on_day_done is not None:
+                on_day_done(by_row, compared_dates, date)
 
         previous_by_month = current_by_month
         previous_path = path
