@@ -1,7 +1,7 @@
 """
 src/run.py — 処理の本体
 
-実行日→対象月、既存 CSV→期間の始まり、入力フォルダ→期間の終わり を組み合わせて
+実行日→既存 CSV→期間の始まり、入力フォルダ→期間の終わり を組み合わせて
 集計範囲を決め、日ごとの延期・積み上げを集計する。
 
 日付が2種類出てくるので混同しないこと。
@@ -11,6 +11,11 @@ src/run.py — 処理の本体
 集計表の横軸は **業務日**（= ファイル名の日付 - 1日）。入力ファイルは
 「前日終了時点」のデータなので、``一覧_20260825.xlsx`` の中身は 8/24 終了時点の
 状態であり、``一覧_20260824.xlsx`` との差分は「8/24 に動いたぶん」になる。
+
+**対象月は業務日基準**。業務日 D の列は、D の月で案件を絞る。実行日が
+8 月でも、業務日 1 月の列は 1 月の案件だけを見る（= 1 月時点の積み上げ・
+延期を 1 月の案件について見る、という集計の意図に沿う）。23 日以降は翌月も
+対象に含める判定は、実行日ではなく業務日で行う。
 """
 
 import datetime
@@ -22,7 +27,7 @@ from comken.core import DateFileFinder, date_in_name, today as _today
 from comken.core.files import atomic_write
 
 from src.diff import ByRow, DaySavedCallback, compute_counts
-from src.report import last_date_in_csv, read_existing, write_csv
+from src.report import COL_TARGET_MONTH, last_date_in_csv, read_existing, write_csv
 from src.source import load_rules
 
 logger = logging.getLogger(__name__)
@@ -47,7 +52,6 @@ def run(today: datetime.date | None = None) -> Path:
     plan_prefixes = tuple(config.FILTER.PLAN_PREFIXES)
     kinds = tuple(config.FILTER.KINDS)
     rules = load_rules()
-    target_months = _target_months(today)
     input_folder = Path(config.FILES.INPUT_FOLDER)
     output_folder = Path(config.REPORT.OUTPUT_FOLDER)
     output_path = output_folder / OUTPUT_NAME
@@ -108,10 +112,15 @@ def run(today: datetime.date | None = None) -> Path:
         )
         return output_path
 
+    # 業務日基準の対象月。読み込み範囲全体で登場する対象月の和集合を取る。
+    # 実行日基準の単一グループではないので、開始ログは「範囲内で出現しうる対象月」
+    # の全体を出す（業務日ごとのログにはその日に使った対象月が出る）。
+    target_months_in_range = _target_months_in_range(start_date, end_date)
+
     # 実行開始時の概要ログ（範囲・対象月・読み込み/読み飛ばし件数・比較相手を1か所で示す）
     _log_run_header(
         input_folder=input_folder,
-        target_months=target_months,
+        target_months=target_months_in_range,
         run_mode=run_mode,
         start_date=start_date,
         end_date=end_date,
@@ -126,13 +135,17 @@ def run(today: datetime.date | None = None) -> Path:
     existing_dates = _dates_from_existing(existing)
 
     # 書き出す行の (対象月, 種別) の組を呼び出し側で組み立てて渡す。
-    row_keys = [(f"{month[0]:04d}-{month[1]:02d}", plan)
-                for month in target_months
+    # 読み込み範囲全体で対象月になる月の行を必ず作り、既存 CSV にある対象月も
+    # 残す（古い対象月の行を消さない）。
+    existing_months = _months_from_existing(existing)
+    months_for_rows = sorted(set(target_months_in_range) | existing_months)
+    row_keys = [(f"{year:04d}-{month:02d}", plan)
+                for (year, month) in months_for_rows
                 for plan in plan_prefixes]
 
     counts = compute_counts(
         targets,
-        target_months,
+        _target_months,
         plan_prefixes,
         kinds,
         rules,
@@ -152,20 +165,42 @@ def run(today: datetime.date | None = None) -> Path:
         start_date,
         end_date,
         len(counts.compared_dates),
-        ", ".join(f"{y:04d}-{m:02d}" for y, m in target_months),
+        ", ".join(f"{y:04d}-{m:02d}" for y, m in target_months_in_range),
     )
     return output_path
 
 
-def _target_months(today: datetime.date) -> list[tuple[int, int]]:
-    """実行日から対象月を決める。23 日以降なら翌月も加える。"""
-    months = [(today.year, today.month)]
-    if today.day >= NEXT_MONTH_FROM_DAY:
-        if today.month == 12:
-            months.append((today.year + 1, 1))
+def _target_months(business_date: datetime.date) -> list[tuple[int, int]]:
+    """業務日から対象月を決める。23 日以降なら翌月も加える。
+
+    集計表の横軸である業務日 D に対して、D の月と（23日以降なら）D の翌月を
+    対象月として返す。**実行日ではなく業務日**を見る点が重要で、これにより
+    業務日 1月の列は 1月の案件だけを対象にし、業務日 1/23 の列は 1月と 2月の
+    両方を対象にする（実行日がどちらでも変わらない）。
+    """
+    months = [(business_date.year, business_date.month)]
+    if business_date.day >= NEXT_MONTH_FROM_DAY:
+        if business_date.month == 12:
+            months.append((business_date.year + 1, 1))
         else:
-            months.append((today.year, today.month + 1))
+            months.append((business_date.year, business_date.month + 1))
     return months
+
+
+def _target_months_in_range(
+    start: datetime.date, end: datetime.date
+) -> list[tuple[int, int]]:
+    """``start`` から ``end`` までの各業務日について対象月を求め、和集合を返す。
+
+    業務日ごとに ``_target_months`` を呼ぶので、月をまたぐ境界や 23 日をまたぐ
+    業務日が含まれていれば、自動的に複数の対象月が並ぶ。順序は年月昇順。
+    """
+    months: set[tuple[int, int]] = set()
+    current = start
+    while current <= end:
+        months.update(_target_months(current))
+        current += datetime.timedelta(days=1)
+    return sorted(months)
 
 
 def _date_range(start: datetime.date, end: datetime.date) -> list[datetime.date]:
@@ -189,6 +224,10 @@ def _log_run_header(
     「入力フォルダ／パターン／対象月／実行モード／読み込み範囲」と、
     「フォルダ全件のうち何件読み、何件読み飛ばしたか」を1セットにして出す。
     範囲外から比較相手として読む1ファイルがあれば、そのファイル名を別行で明示する。
+
+    ``target_months`` は読み込み範囲全体で対象月になりうる月の和集合。
+    業務日ごとに対象月が変わるので、開始ログにはその全体を出す
+    （業務日ごとの対象月は日次のログに別途出る）。
 
     ``start_date`` / ``end_date`` は業務日。``targets`` の ``date`` はファイル日付
     （= 業務日 + 1日）なので、件数カウントで ``+1日`` して比較する。
@@ -245,6 +284,27 @@ def _dates_from_existing(existing: list[dict[str, object]]) -> list[datetime.dat
         except ValueError:
             continue
     return dates
+
+
+def _months_from_existing(existing: list[dict[str, object]]) -> set[tuple[int, int]]:
+    """既存 CSV の「対象月」列を読み取り、``(year, month)`` の集合を返す。
+
+    既存の対象月の行を残すために使う。解釈できない行はスキップする
+    （手編集などで壊れた行があっても落とさず、後段の ``write_csv`` が
+    ``leftover_rows`` としてそのまま残すので問題ない）。
+    """
+    months: set[tuple[int, int]] = set()
+    for row in existing:
+        value = row.get(COL_TARGET_MONTH, "")
+        if not value:
+            continue
+        text = str(value).strip()
+        try:
+            year_str, month_str = text.split("-")
+            months.add((int(year_str), int(month_str)))
+        except ValueError:
+            continue
+    return months
 
 
 def _all_dated_files(folder: Path) -> list[tuple[datetime.date, Path]]:
@@ -358,6 +418,7 @@ def _make_day_saver(
         by_row: ByRow,
         compared_dates: set[datetime.date],
         _date: datetime.date,
+        target_dates_by_month: dict[tuple[int, int], set[datetime.date]] | None = None,
     ) -> None:
         nonlocal conditions_written
         last_compared = max(compared_dates)  # 1日ぶん終わった直後なので必ず空でない
@@ -366,7 +427,7 @@ def _make_day_saver(
         # 「ファイルはあったが件数が0」を ``"0"`` で表す対象になる。
         all_dates = sorted(set(range_dates) | set(existing_dates))
         dates = [(d, d in compared_dates) for d in all_dates]
-        write_csv(output_path, by_row, dates, row_keys)
+        write_csv(output_path, by_row, dates, row_keys, target_dates_by_month)
         if not conditions_written:
             _write_text(conditions_path, current_conditions)
             conditions_written = True

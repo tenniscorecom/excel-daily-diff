@@ -199,12 +199,19 @@ def test_run_rebuilds_full_period_when_conditions_change(
     assert _cell(second_rows, "2026-04", "標準", "積み上げ", "2026-04-21") == first_4_21
 
 
-def test_run_keeps_old_target_month_rows_with_empty_new_columns(
+def test_run_keeps_old_target_month_rows_when_target_months_change(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """先月が対象月の行は、新しい日付列が空のまま残る。"""
+    """古い対象月の行は残しつつ、業務日 23日 を境に新しい対象月の行が追加される。
+
+    1回目: 業務日 4/20, 4/21（day < 23）→ 4月のみ対象 → 4月の行だけ
+    2回目: ファイル 4/24 を追加 → 業務日 4/23 が含まれる → 5月の対象月も追加
+
+    4月の行は残り（既存 CSV の対象月の行が消えない）、5月の行が新たに作られる。
+    実行日（= 5月）が何であっても、業務日 23日 をまたぐまでは 5月の行は作られない。
+    """
     input_folder, output_folder = setup_run(tmp_path)
-    # 4月のとき 4月のみが対象。比較相手用に 2025/12/20 と 2/28 を置く
+    # 比較相手用に 2025/12/20 と 2/28 を置く
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -212,65 +219,85 @@ def test_run_keeps_old_target_month_rows_with_empty_new_columns(
     run(datetime.date(2026, 4, 25))
     with CSV(output_folder / OUTPUT_NAME) as csv:
         first_rows = list(csv.read())
-    # 4月の行が生成されている
-    assert any(row["対象月"] == "2026-04" for row in first_rows)
+    # 業務日 4/19, 4/20 (day < 23) → 4月のみ対象 → 4月の行だけ
+    first_target_months = {row["対象月"] for row in first_rows}
+    assert "2026-04" in first_target_months
+    assert "2026-05" not in first_target_months
 
-    # 5月以前の対象月のファイルを残しつつ 23日以降の日付で再実行
-    # → 5月が対象月に加わる。4月の集計対象はそのまま。
-    # このテストでは 4月のレコードが消える（＝延期になる）形で
-    # 「古い対象月」4月の行の列も更新されることを確認する。
-    make_book(
-        input_folder / "一覧_20260422.xlsx",
-        [["b", "2026-04-11", "標準B", "予定"]],
-    )
+    # ファイル 4/24 を追加（業務日 4/23 = day 23 を処理）。実行日は 5月にする
     make_book(
         input_folder / "一覧_20260423.xlsx",
         [["b", "2026-04-11", "標準B", "予定"]],
     )
-    run(datetime.date(2026, 5, 25))  # 5月25日 → 5月と6月が対象。4/22〜4/23 が下限(4/1)より後
+    make_book(
+        input_folder / "一覧_20260424.xlsx",
+        [["b", "2026-04-11", "標準B", "予定"]],
+    )
+    run(datetime.date(2026, 5, 25))
 
-    # 4月の行 が残っていること、5月と6月の行が新たに作られていることを確認
     with CSV(output_folder / OUTPUT_NAME) as csv:
         second_rows = list(csv.read())
 
-    # 4月の行が残る
+    # 4月の行は残っている
     assert any(row["対象月"] == "2026-04" for row in second_rows)
-    # 5月と6月の行が新たに作られている
+    # 業務日 4/23 (day >= 23) が対象月の境界をまたぐので 5月の行が新たに作られる
     assert any(row["対象月"] == "2026-05" for row in second_rows)
-    assert any(row["対象月"] == "2026-06" for row in second_rows)
-    # 4月の行の業務日 4/22 列は空（4月はもう対象月でないため、ループで処理されない）。
-    # 業務日 4/23 列は対応するファイル（ファイル日付 4/24）が無いので存在しない。
-    row_apr_added = _row(second_rows, "2026-04", "標準", "積み上げ")
-    assert row_apr_added["2026-04-22"] == ""
-    assert "2026-04-23" not in second_rows[0]
 
 
-def test_run_targets_two_months_from_the_23rd(
+def test_run_picks_target_months_from_business_dates_not_run_date(
     tmp_path: Path, make_book, setup_run
 ) -> None:
+    """対象月は実行日ではなく業務日で決まる。実行日が 5月でも、業務日 4月の
+    列は 4月の案件だけを対象にする（旧仕様では 4月+5月が対象になっていた）。
+    """
     input_folder, output_folder = setup_run(tmp_path)
-    # 範囲内最初（2/28）の比較相手として 2025/12/20 を置く（範囲外だが例外的に開かれる）
+    # 比較相手として 2025/12/20 を置く（範囲外だが例外的に開かれる）
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260410.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260418.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    # 5月と4月のレコードが混在するファイル
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+
+    run(datetime.date(2026, 5, 25))  # 実行日は 5月、業務日は 4/19・4/20
+
+    csv_path = output_folder / OUTPUT_NAME
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+    target_months = {row["対象月"] for row in rows}
+    # 業務日 4/19・4/20（day < 23）の対象月は 4月のみ
+    assert "2026-04" in target_months
+    # 5月・6月 の行は作られない（業務日が 23日を迎えていないため）
+    assert "2026-05" not in target_months
+    assert "2026-06" not in target_months
+
+
+def test_run_picks_both_months_on_business_date_23(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """業務日が 23日以降なら、当月と翌月の両方が対象月になる。
+
+    業務日 4/23（= ファイル日付 4/24）で対象月は 4月と5月。実行日が 4月でも
+    5月でも同じ結果になる。
+    """
+    input_folder, output_folder = setup_run(tmp_path)
+    # 4/22 ファイルの比較相手として 4/20 を置く
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(
-        input_folder / "一覧_20260420.xlsx",
+        input_folder / "一覧_20260423.xlsx",
         [
             ["apr", "2026-04-10", "標準A", "完了"],
             ["may", "2026-05-10", "標準B", "予定"],
         ],
     )
+    # 業務日 4/23 (file 4/24) で 5月のレコードが消える
     make_book(
-        input_folder / "一覧_20260421.xlsx",
-        [
-            ["apr", "2026-04-10", "標準A", "完了"],
-            # may が消えた → 5月の延期として記録
-        ],
+        input_folder / "一覧_20260424.xlsx",
+        [["apr", "2026-04-10", "標準A", "完了"]],
     )
 
-    run(datetime.date(2026, 4, 25))  # 23日以降なので 4月と5月が対象
+    run(datetime.date(2026, 4, 25))  # 実行日は 4月、業務日 4/23 が対象月の境界
 
     csv_path = output_folder / OUTPUT_NAME
     with CSV(csv_path) as csv:
@@ -278,6 +305,213 @@ def test_run_targets_two_months_from_the_23rd(
     target_months = {row["対象月"] for row in rows}
     assert "2026-04" in target_months
     assert "2026-05" in target_months
+    # 業務日 4/23 で may が消えた → 5月の行に「延期 1」
+    assert _cell(rows, "2026-05", "標準", "延期", "2026-04-23") == "1"
+
+
+def test_run_picks_only_one_month_on_business_date_22(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """業務日 4/22（= ファイル日付 4/23）の対象月は 4月のみ。23日未満なので翌月は含まない。"""
+    input_folder, output_folder = setup_run(tmp_path)
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(
+        input_folder / "一覧_20260423.xlsx",
+        [
+            ["apr", "2026-04-10", "標準A", "完了"],
+            ["may", "2026-05-10", "標準B", "予定"],
+        ],
+    )
+
+    run(datetime.date(2026, 4, 25))  # 業務日 4/22 (file 4/23) まで
+
+    csv_path = output_folder / OUTPUT_NAME
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+    target_months = {row["対象月"] for row in rows}
+    # 業務日 4/22 は 4月のみ対象
+    assert "2026-04" in target_months
+    # 業務日が 23日を迎えていないので、5月の行は作られない
+    assert "2026-05" not in target_months
+
+
+def test_run_picks_two_months_on_business_date_jan_23(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """業務日 1/23（= ファイル日付 1/24）の対象月は 1月と2月の両方。
+
+    月をまたぐ境界（1月 → 2月）でも、業務日 23日以降なら翌月も対象に含める。
+    """
+    input_folder, output_folder = setup_run(tmp_path)
+    # 比較相手として前年のファイルを置く（範囲外だが例外的に開かれる）
+    make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251231.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260123.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    # 業務日 1/23 = ファイル日付 1/24。1月と2月のレコードが両方現れる
+    make_book(
+        input_folder / "一覧_20260124.xlsx",
+        [
+            ["jan", "2026-01-15", "標準A", "完了"],
+            ["feb", "2026-02-05", "標準B", "予定"],
+        ],
+    )
+
+    run(datetime.date(2026, 1, 25))  # 実行日が 1月、業務日 1/23 を処理
+
+    csv_path = output_folder / OUTPUT_NAME
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+    target_months = {row["対象月"] for row in rows}
+    # 業務日 1/23 → 1月と2月の両方が対象月
+    assert "2026-01" in target_months
+    assert "2026-02" in target_months
+    # 業務日 1/23 で jan が新規 → 1月の行に「積み上げ 1」
+    assert _cell(rows, "2026-01", "標準", "積み上げ", "2026-01-23") == "1"
+    # feb は 2月の対象月行に「積み上げ 1」
+    assert _cell(rows, "2026-02", "標準", "積み上げ", "2026-01-23") == "1"
+
+
+def test_run_picks_only_one_month_on_business_date_jan_22(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """業務日 1/22（= ファイル日付 1/23）の対象月は 1月のみ。23日未満なので2月は含まない。"""
+    input_folder, output_folder = setup_run(tmp_path)
+    make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251231.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260122.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    # 業務日 1/22 = ファイル日付 1/23。2月のレコードだけ新しく現れる
+    make_book(
+        input_folder / "一覧_20260123.xlsx",
+        [
+            ["feb", "2026-02-05", "標準B", "予定"],
+        ],
+    )
+
+    run(datetime.date(2026, 1, 25))  # 業務日 1/22 まで
+
+    csv_path = output_folder / OUTPUT_NAME
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+    target_months = {row["対象月"] for row in rows}
+    # 業務日 1/22 → 1月のみ対象
+    assert "2026-01" in target_months
+    # 2月のレコードは business_date=1/22 時点で 2月が対象月でないため集計されない
+    assert "2026-02" not in target_months
+
+
+def test_run_reads_each_file_once_across_month_boundary(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """月をまたぐ業務日（1/31 と 2/1）で、一覧_20260201.xlsx が両方の計算に使われるが
+    1回しか読まれない。
+    """
+    input_folder, output_folder = setup_run(tmp_path)
+    # 1/30 ファイルの比較相手として 2025/12/20 を置く
+    make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260130.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    # 月末のファイル（1/31 終了時点 → 業務日 1/30 で使う）
+    make_book(input_folder / "一覧_20260131.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    # 月またぎ。一覧_20260201.xlsx は:
+    #   - 業務日 1/31 (= 1/31 file vs 2/1 file) の current → 対象月 1月 と 2月
+    #   - 業務日 2/1  (= 2/1 file vs 2/2 file) の previous → 対象月 2月
+    make_book(
+        input_folder / "一覧_20260201.xlsx",
+        [
+            ["jan", "2026-01-15", "標準A", "完了"],
+            ["feb", "2026-02-05", "標準B", "予定"],
+        ],
+    )
+    # 2/2 ファイル（業務日 2/1 の current）
+    make_book(
+        input_folder / "一覧_20260202.xlsx",
+        [
+            ["jan", "2026-01-15", "標準A", "完了"],
+            ["feb", "2026-02-05", "標準B", "予定"],
+        ],
+    )
+
+    opened: list[Path] = []
+
+    def _capture(path: Path, *_args: object, **_kwargs: object) -> dict[str, object]:
+        opened.append(path)
+        return {"jan": __import__("src.source", fromlist=["Record"]).Record(
+            "jan", datetime.date(2026, 1, 15), "標準"),
+            "feb": __import__("src.source", fromlist=["Record"]).Record(
+                "feb", datetime.date(2026, 2, 5), "標準"),
+            "x": __import__("src.source", fromlist=["Record"]).Record(
+                "x", datetime.date(2026, 1, 10), "標準"),
+        }
+
+    with patch("src.diff.read_records", side_effect=_capture):
+        run(datetime.date(2026, 2, 3))
+
+    opened_names = [p.name for p in opened]
+    # 一覧_20260201.xlsx は1回しか読まれない
+    assert opened_names.count("一覧_20260201.xlsx") == 1
+    # すべてのファイルが1回ずつ
+    assert len(opened_names) == len(set(opened_names))
+
+
+def test_run_row_has_values_only_for_target_month_dates(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """各対象月の行は、その月が対象月だった業務日の列にだけ値を持つ。
+
+    業務日 1月の列では1月のレコード、1/23以降の列では2月のレコードも対象に
+    なる。1月の行（対象月=2026-01）の業務日 1/23 列には、1月のレコードぶんの
+    数値が入る（feb は2月の行に入るので、1月の行の1/23列には影響しない）。
+    """
+    input_folder, output_folder = setup_run(tmp_path)
+    # 業務日 1/22 まで: 1月の対象月のみ
+    make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251231.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260122.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    # 業務日 1/22 = ファイル 1/23。x が消える
+    make_book(input_folder / "一覧_20260123.xlsx", [])
+
+    # 業務日 1/23 = ファイル 1/24。jan と feb が増える（1月と2月の対象月両方）
+    make_book(
+        input_folder / "一覧_20260124.xlsx",
+        [
+            ["jan", "2026-01-15", "標準A", "完了"],
+            ["feb", "2026-02-05", "標準B", "予定"],
+        ],
+    )
+    # 業務日 1/23 = ファイル 1/24 で jan と feb がいる → 1月の行に jan (積み上げ 1)
+
+    run(datetime.date(2026, 1, 25))
+
+    csv_path = output_folder / OUTPUT_NAME
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+
+    # 業務日 1/22: 1月の対象月のみ。x が消えた → 1月の行に「延期 1」
+    assert _cell(rows, "2026-01", "標準", "延期", "2026-01-22") == "1"
+    # 業務日 1/22 で 2月のレコードはまだ無いので、2月の行（ある場合）の値は空
+    row_2 = _row_if_exists(rows, "2026-02", "標準", "延期")
+    if row_2 is not None:
+        # 業務日 1/22 は 2月が対象月でない → 値は空
+        assert row_2.get("2026-01-22", "") == ""
+
+    # 業務日 1/23: 1月の対象月、jan が増えた → 1月の行に「積み上げ 1」
+    assert _cell(rows, "2026-01", "標準", "積み上げ", "2026-01-23") == "1"
+    # 業務日 1/23 は 2月も対象月。feb が増えた → 2月の行に「積み上げ 1」
+    assert _cell(rows, "2026-02", "標準", "積み上げ", "2026-01-23") == "1"
+
+
+def _row_if_exists(
+    rows: list[dict[str, object]],
+    target_month: str,
+    plan: str,
+    status: str,
+) -> dict[str, object] | None:
+    for row in rows:
+        if row["対象月"] == target_month and row["種別"] == plan and row["判定"] == status:
+            return row
+    return None
 
 
 def test_range_floor_returns_first_day_of_current_year() -> None:
@@ -528,9 +762,9 @@ def test_run_writes_csv_after_each_day(
     save_calls: list[Path] = []
     original_write_csv = __import__("src.report", fromlist=["write_csv"]).write_csv
 
-    def _spy_write_csv(path, by_row, dates, row_keys):
+    def _spy_write_csv(path, by_row, dates, row_keys, target_dates_by_month=None):
         save_calls.append(path)
-        original_write_csv(path, by_row, dates, row_keys)
+        original_write_csv(path, by_row, dates, row_keys, target_dates_by_month)
 
     with patch("src.run.write_csv", side_effect=_spy_write_csv):
         run(datetime.date(2026, 4, 25))

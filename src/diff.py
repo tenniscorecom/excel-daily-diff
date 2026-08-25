@@ -37,8 +37,18 @@ ByRow = dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]]
 
 # 1日ぶん集計が終わったあとに呼ばれるフック。``by_row`` と ``compared_dates`` は
 # ミュータブルで、ここまでの累積状態をそのまま渡す。書き出し側でファイルに
-# 落とせば、途中で例外が出ても途中までが残る。
-DaySavedCallback = Callable[[ByRow, set[datetime.date], datetime.date], None]
+# 落とせば、途中で例外が出ても途中までが残る。``target_dates_by_month`` は
+# その日までに確定した「対象月 → 対象月だった業務日」の対応（書き出し時点で
+# 未確定の月は省略される）。
+DaySavedCallback = Callable[
+    [ByRow, set[datetime.date], datetime.date, dict[tuple[int, int], set[datetime.date]] | None],
+    None,
+]
+
+# 業務日 → 対象月の集合 を返す関数。``run.py`` の ``_target_months`` を渡す。
+# 1ファイルは1回だけ読み、そのファイルが担当する業務日（自身 = current、直後 =
+# previous）の両方で必要になる対象月すべてに振り分ける。
+TargetMonthsFor = Callable[[datetime.date], list[tuple[int, int]]]
 
 
 class Counts(NamedTuple):
@@ -47,10 +57,13 @@ class Counts(NamedTuple):
     - ``compared_dates``: ファイルが存在した日の集合（空セルとの区別用）
     - ``by_row``: 行キー (対象月, 種別, 判定) → {日付: 件数}。
       該当しない日はキーに含まれない（CSV 側で空セルとして扱う）。
+    - ``target_dates_by_month``: 対象月 → その月が対象月だった業務日の集合。
+      対象月の行で ``"0"`` と空セルを区別するために ``write_csv`` が参照する。
     """
 
     compared_dates: set[datetime.date]
     by_row: ByRow
+    target_dates_by_month: dict[tuple[int, int], set[datetime.date]]
 
 
 STATUS_ADDED = "積み上げ"
@@ -59,7 +72,7 @@ STATUS_POSTPONED = "延期"
 
 def compute_counts(
     dated_files: list[tuple[datetime.date, Path]],
-    target_months: list[tuple[int, int]],
+    target_months_for: TargetMonthsFor,
     plan_prefixes: tuple[str, ...],
     kinds: tuple[str, ...],
     rules: tuple[ColumnRule, ...],
@@ -68,17 +81,26 @@ def compute_counts(
 ) -> Counts:
     """日付の古い順に並んだファイルを、隣り合う組で突き合わせ、対象月ごとに数える。
 
-    1ファイルは1回だけ読む。読んだ行は対象月で振り分ける（複数月が対象なら
-    そのぶん全部数える）。
+    1ファイルは1回だけ読む。読んだ行は、**そのファイルが担当する業務日**
+    （自身のファイル日付 - 1日 = ``current`` 側、直後のファイル日付 - 1日 =
+    ``previous`` 側）のそれぞれが必要とする対象月すべてに振り分ける。月を
+    またぐ境界や 23 日をまたぐ業務日では、対象月の集合が前日のものと変わる
+    ので、1つのファイルが複数の対象月で数えられる。
+
+    ``target_months_for`` は業務日 → 対象月のリストを返す関数。``run.py``
+    が ``_target_months`` を渡す。
+
     ``range_start`` を渡すと、範囲内のファイルに対して ``(n/total)`` の
     進捗をログに出す。範囲外（比較相手として例外的に読む1ファイル）は
     進捗ログの対象外。
+
     ``on_day_done`` を渡すと、日1日ぶんの突き合わせが終わるたびに呼ばれる。
     ``by_row`` と ``compared_dates`` はミュータブルで、ここまでの累積状態を
     そのまま渡す（呼ぶ側でファイルへ書き出せば、途中で落ちても途中までが残る）。
     """
     by_row: ByRow = {}
     compared_dates: set[datetime.date] = set()
+    target_dates_by_month: dict[tuple[int, int], set[datetime.date]] = {}
     previous_by_month: dict[tuple[int, int], dict[str, Record]] | None = None
     previous_path: Path | None = None
 
@@ -88,17 +110,31 @@ def compute_counts(
     )
     in_range_index = 0
 
-    for date, path in dated_files:
+    # 先に「ファイル日付 → 業務日」を求めておき、各ファイルのバケットに必要な
+    # 対象月の集合を隣接2日分から計算する。
+    business_dates: list[datetime.date] = [
+        date - datetime.timedelta(days=1) for date, _ in dated_files
+    ]
+
+    for index, (date, path) in enumerate(dated_files):
         is_in_range = range_start is None or date >= range_start
         progress: tuple[int, int] | None = None
         if is_in_range and range_start is not None:
             in_range_index += 1
             progress = (in_range_index, in_range_total)
 
+        # このファイルが担当する対象月の集合。
+        # - 自身 = current 側 → 業務日 = date - 1日 の対象月
+        # - 直後 = previous 側 → 業務日 = dated_files[index+1][0] - 1日 の対象月
+        # 最終ファイルは previous 側が無いので current 側だけ。
+        relevant_months: set[tuple[int, int]] = set(target_months_for(business_dates[index]))
+        if index + 1 < len(dated_files):
+            relevant_months.update(target_months_for(business_dates[index + 1]))
+
         records = read_records(path, plan_prefixes, kinds, rules, progress=progress)
         # 対象月ごとに「その対象月の行だけ」を取り出した辞書を作る
         current_by_month: dict[tuple[int, int], dict[str, Record]] = {
-            month: {} for month in target_months
+            month: {} for month in relevant_months
         }
         for record in records.values():
             month = (record.date.year, record.date.month)
@@ -109,20 +145,25 @@ def compute_counts(
             # 業務日 = ファイル日付 - 1日（入力ファイルは前日終了時点のデータ）。
             # ``compared_dates`` も業務日で持つ。``on_day_done`` には元の
             # ファイル日付も渡しておく（保存側でログ用に使える）。
-            business_date = date - datetime.timedelta(days=1)
-            for month in target_months:
-                previous_records = previous_by_month[month]
-                current_records = current_by_month[month]
+            business_date = business_dates[index]
+            # この突き合わせの回の対象月（業務日基準で決まる）
+            target_months_this_day = target_months_for(business_date)
+            for month in target_months_this_day:
+                previous_records = previous_by_month.get(month, {})
+                current_records = current_by_month.get(month, {})
                 added_keys = current_records.keys() - previous_records.keys()
                 postponed_keys = previous_records.keys() - current_records.keys()
                 for key in added_keys:
                     _inc(by_row, month, current_records[key].plan_prefix, STATUS_ADDED, business_date)
                 for key in postponed_keys:
                     _inc(by_row, month, previous_records[key].plan_prefix, STATUS_POSTPONED, business_date)
+                # この業務日で対象月だったことを記録。CSV 出力側で「対象月でない業務日は
+                # 空セル」にするために使う。
+                target_dates_by_month.setdefault(month, set()).add(business_date)
             compared_dates.add(business_date)
-            _log_daily_diff(business_date, date, target_months, by_row, previous_path, path)
+            _log_daily_diff(business_date, date, target_months_this_day, by_row, previous_path, path)
             if on_day_done is not None:
-                on_day_done(by_row, compared_dates, date)
+                on_day_done(by_row, compared_dates, date, target_dates_by_month)
 
         previous_by_month = current_by_month
         previous_path = path
@@ -133,6 +174,7 @@ def compute_counts(
     return Counts(
         compared_dates=compared_dates,
         by_row=by_row,
+        target_dates_by_month=target_dates_by_month,
     )
 
 

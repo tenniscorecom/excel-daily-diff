@@ -35,15 +35,22 @@ def write_csv(
     by_row: dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]],
     dates: list[tuple[datetime.date, bool]],
     row_keys: list[tuple[str, str]],
+    target_dates_by_month: dict[tuple[int, int], set[datetime.date]] | None = None,
 ) -> None:
     """集計 CSV を1本だけ書く。
 
     ``dates`` は ``(日付, 今日比較したか)`` のリスト。1日も飛ばさず並べ、
-    今日比較した日は「ファイルはあったが件数が 0」なら ``"0"`` を入れ、
-    それ以外（ファイル無し・履歴）は空セルにする（README の仕様）。
+    今日比較した日かつ、その対象月がその業務日で対象だった場合は
+    「ファイルはあったが件数が 0」を ``"0"`` で表す。それ以外（ファイル無し、
+    対象月でない業務日、履歴）は空セルにする。
     ``row_keys`` は呼び出し側で組み立てた ``(対象月, 種別)`` の組。
     既存 CSV があれば (対象月, 種別, 判定) をキーにマージし、
     新しい集計に無いキーはそのまま残す（古い対象月の行も消さない）。
+
+    ``target_dates_by_month`` は対象月ごとに「対象月だった業務日」の集合。
+    業務日基準の対象月になったので、同じ行でも対象月でない業務日の列は
+    空セルにする必要がある。渡されない場合は従来どおり「今日比較した日なら 0」
+    として扱う（既存呼び出しの互換用）。
     """
     columns = [COL_TARGET_MONTH, COL_PLAN, COL_STATUS, *(_date_header(d) for d, _ in dates)]
 
@@ -64,14 +71,29 @@ def write_csv(
             row[COL_STATUS] = status
             month = _month_tuple_from_str(month_str)
             per_date = by_row.get((month, plan, status), {})
+            month_active_dates = (
+                target_dates_by_month.get(month) if target_dates_by_month else None
+            )
             for d, is_compared in dates:
                 header = _date_header(d)
                 if d in per_date:
                     row[header] = per_date[d]
-                elif is_compared:
-                    # ファイルはあったが件数が 0 の日 → "0"
+                elif (
+                    is_compared
+                    and month_active_dates is not None
+                    and d in month_active_dates
+                ):
+                    # 業務日が比較対象かつ、その対象月がその業務日で対象月だった
+                    # → 件数 0 を ``"0"`` で表す（空セルと区別するため）
                     row[header] = "0"
-                # ファイルが無い日・履歴は空のまま（既定値 ""）
+                elif is_compared and header in row:
+                    # 業務日は比較対象だが、その対象月がその業務日で対象月でなかった
+                    # → 既存セルの値を消す（前回は対象月だった業務日が、対象月の
+                    # 集合が変わったことで対象外になったケースを想定）
+                    del row[header]
+                # else: 今この run では比較していない業務日、または対象月が一度も
+                # 対象月になっていない → 既存セルの値は触らない（前回以前の run で
+                # 書き込まれた値も、空セルのまま残す）
             new_rows.append(row)
     # 既存行で対象月に含まれないもの（古い対象月ぶん）はそのまま残す
     leftover_rows = list(existing_by_key.values())
