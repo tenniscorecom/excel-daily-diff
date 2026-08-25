@@ -1,8 +1,8 @@
 """
 src/report.py — 集計結果を CSV に書き出す
 
-形は「対象月 × 種別 × 判定」を行とし、業務日を列に並べたもの。
-対象月が変わっても古い行は残し、その月の案件が無い新しい日付列は空にする。
+形は「当月/来月ラベル × 判定」を行とし、業務日を列に並べたもの。
+行は常に 4 行固定（当月/来月 × 積み上げ/延期）。
 """
 
 import datetime
@@ -11,19 +11,23 @@ from pathlib import Path
 
 from comken.toolbox.csv import CSV
 
-from src.diff import ByRow, RowKey
+from src.diff import LABEL_CURRENT_MONTH, LABEL_NEXT_MONTH, ByRow, RowKey
 
 logger = logging.getLogger(__name__)
 
+# 出力CSV の行ラベル（順序込み）。 ``run.py`` でこの順に行が並ぶ。
+ROW_LABELS: tuple[str, ...] = (LABEL_CURRENT_MONTH, LABEL_NEXT_MONTH)
+
+# 列見出し。「種別」列は廃止し、「対象月」（= ラベル）と「判定」の2列構成。
 COL_TARGET_MONTH = "対象月"
-COL_PLAN = "種別"
 COL_STATUS = "判定"
 
 STATUS_ADDED = "積み上げ"
 STATUS_POSTPONED = "延期"
 
 
-# 既存 CSV から取り込んだ行。対象月が変わってもそのまま残す形
+# 既存 CSV から取り込んだ行。行ラベルが変わったら（過去バージョンの CSV を
+# 持ち越したときなど）は無視される（後述）。
 ExistingRow = dict[str, object]
 
 
@@ -31,55 +35,52 @@ def write_csv(
     path: Path,
     by_row: ByRow,
     dates: list[tuple[datetime.date, bool]],
-    row_keys: list[tuple[str, str]],
+    row_keys: list[str],
     target_dates_by_month: dict[str, set[datetime.date]] | None = None,
-    keep_leftover_rows: bool = True,
 ) -> tuple[int, int]:
     """集計 CSV を1本だけ書く。
 
     ``dates`` は ``(業務日, 今日比較したか)`` のリスト。1日も飛ばさず並べ、
-    今日比較した日かつ、その対象月がその業務日で対象だった場合は
+    今日比較した日かつ、そのラベルがその業務日で対象だった場合は
     「ファイルはあったが件数が 0」を ``"0"`` で表す。それ以外（ファイル無し、
-    対象月でない業務日、履歴）は空セルにする。
-    ``row_keys`` は呼び出し側で組み立てた ``(対象月, 種別)`` の組。
-    既存 CSV があれば (対象月, 種別, 判定) をキーにマージし、
-    新しい集計に無いキーはそのまま残す（古い対象月の行も消さない）。
+    ラベルでない業務日、履歴）は空セルにする。
 
-    ``target_dates_by_month`` は対象月ごとに「対象月だった業務日」の集合。
-    業務日基準の対象月になったので、同じ行でも対象月でない業務日の列は
-    空セルにする必要がある。
+    ``row_keys`` は当月/来月のラベル文字列のリスト（順序はこのままで
+    ``["当月", "来月"]`` を想定）。行は常に固定 4 行（``当月`` / ``来月`` ×
+    積み上げ / 延期）になる。
 
-    ``keep_leftover_rows`` は ``row_keys`` に現れない既存行（=古い対象月や、
-    今回の ``row_keys`` に含まれない組）をどう扱うかのフラグ。``True``
-    （既定、年次累積モード）は従来通りそのまま残す。``False``
-    （ローリングモード）は窓の外に出た対象月の行を捨てる。
-    報告側はローリングか否かを知らず、呼び出し側で判断してこの引数を渡す。
+    ``target_dates_by_month`` はラベルごとに「そのラベルが対象だった業務日」
+    の集合。同じ行でも、ラベルでない業務日の列は空セルにする必要がある。
 
     戻り値は ``(書き出した行数, 列数)``。途中保存のたびに呼ばれるので、
     「出力しました」のログは呼び出し側で最後の1回に絞って出す（出力ファイル
     1本につき1行だけにするため）。
-    """
-    columns = [COL_TARGET_MONTH, COL_PLAN, COL_STATUS, *(d.isoformat() for d, _ in dates)]
 
-    # 既存行をキー引きできる形にする
-    existing_by_key: dict[tuple[str, str, str], ExistingRow] = {}
+    過去バージョン（``種別``列あり）の ``集計.csv`` を引き継いだ場合、``row_keys``
+    に無いラベル（例: 古い対象月の行）はそのまま残らない（黙って消える）。
+    列構成を大きく変えた以上、``集計.csv`` を消してから作り直す運用が
+    推奨（``config.ini.example`` の注意書き参照）。
+    """
+    columns = [COL_TARGET_MONTH, COL_STATUS, *(d.isoformat() for d, _ in dates)]
+
+    # 既存行を ``(対象月ラベル, 判定)`` で引ける形にする
+    existing_by_key: dict[tuple[str, str], ExistingRow] = {}
     if path.exists():
         for row in read_existing(path):
-            key = (str(row[COL_TARGET_MONTH]), str(row[COL_PLAN]), str(row[COL_STATUS]))
+            key = (str(row[COL_TARGET_MONTH]), str(row[COL_STATUS]))
             existing_by_key[key] = row
 
     statuses = (STATUS_ADDED, STATUS_POSTPONED)
     new_rows: list[dict[str, object]] = []
-    for month_str, plan in row_keys:
+    for label in row_keys:
         for status in statuses:
-            key = (month_str, plan, status)
+            key = (label, status)
             row = existing_by_key.pop(key, {}).copy()
-            row[COL_TARGET_MONTH] = month_str
-            row[COL_PLAN] = plan
+            row[COL_TARGET_MONTH] = label
             row[COL_STATUS] = status
-            per_date = by_row.get(RowKey(month_str, plan, status), {})
-            month_active_dates = (
-                target_dates_by_month.get(month_str) if target_dates_by_month else None
+            per_date = by_row.get(RowKey(label, status), {})
+            label_active_dates = (
+                target_dates_by_month.get(label) if target_dates_by_month else None
             )
             for d, is_compared in dates:
                 header = d.isoformat()
@@ -87,31 +88,32 @@ def write_csv(
                     row[header] = per_date[d]
                 elif (
                     is_compared
-                    and month_active_dates is not None
-                    and d in month_active_dates
+                    and label_active_dates is not None
+                    and d in label_active_dates
                 ):
-                    # 業務日が比較対象かつ、その対象月がその業務日で対象月だった
+                    # 業務日が比較対象かつ、そのラベルがその業務日で対象だった
                     # → 件数 0 を ``"0"`` で表す（空セルと区別するため）
                     row[header] = "0"
                 elif is_compared and header in row:
-                    # 業務日は比較対象だが、その対象月がその業務日で対象月でなかった
-                    # → 既存セルの値を消す（前回は対象月だった業務日が、対象月の
+                    # 業務日は比較対象だが、そのラベルがその業務日で対象でなかった
+                    # → 既存セルの値を消す（前回は対象だった業務日が、対象月の
                     # 集合が変わったことで対象外になったケースを想定）
                     del row[header]
-                # else: 今この run では比較していない業務日、または対象月が一度も
-                # 対象月になっていない → 既存セルの値は触らない（前回以前の run で
-                # 書き込まれた値も、空セルのまま残す）
+                # else: 今この run では比較していない業務日、またはそのラベルが
+                # 一度も対象になっていない → 既存セルの値は触らない（前回以前の
+                # run で書き込まれた値も、空セルのまま残す）
             new_rows.append(row)
-    # 既存行で対象月に含まれないもの（古い対象月ぶん）はそのまま残す設計だが、
-    # ローリングモードでは窓の外に出た行を捨てる。フラグで呼び出し側が制御する。
-    leftover_rows = list(existing_by_key.values()) if keep_leftover_rows else []
+    # 行は常に固定（``row_keys`` × {積み上げ, 延期}）で、``row_keys`` に無い
+    # 既存行を残す必要は無くなった（そもそも列構成が変わった以上、過去の
+    # ``種別`` 列ありの行は引き継がない）。``existing_by_key`` に残った分は
+    # 過去バージョンの CSV を持ち越した場合だけで、黙って捨てる。
 
     # ``CSV.replace`` は ``Table`` 経由で見出しと行の列集合が一致していないと
     # ``TableRowColumnsError`` を投げる。既存行は CSV にあった列のままで、
     # 今回増えた列は持っていないので、ここで全列を揃える（無い列は空文字）
     rows_for_csv = [
         {column: row.get(column, "") for column in columns}
-        for row in new_rows + leftover_rows
+        for row in new_rows
     ]
     with CSV(path, columns=columns) as csv:
         csv.replace(rows_for_csv)
@@ -135,7 +137,7 @@ def last_date_in_csv(existing: list[ExistingRow]) -> datetime.date | None:
     """
     if not existing:
         return None
-    first_col_index = 3  # 対象月 / 種別 / 判定 の3列のあと
+    first_col_index = 2  # 対象月 / 判定 の2列のあと
     dates = [
         date
         for date in (

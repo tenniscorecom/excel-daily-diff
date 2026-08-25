@@ -11,7 +11,7 @@ src/diff.py — 日付順に並んだファイルを、隣り合う日どうし�
 との差分は「8/24 に動いたぶん」、つまり **業務日 = 前側のファイルの日付**。
 ここで言う「業務日 D の列」とは「``一覧_(D+1)`` と ``一覧_(D+2)`` を比べた結果」。
 
-戻り値は ``Counts`` —— 「行キー (対象月, 種別, 判定) をキーに、**業務日**ごとの
+戻り値は ``Counts`` —— 「行キー (当月/来月ラベル, 判定) をキーに、**業務日**ごとの
 件数 dict を持つ」形に直接してある。
 """
 
@@ -26,32 +26,48 @@ from src.source import Progress, Record, read_records
 logger = logging.getLogger(__name__)
 
 
-# 集計表の 1 行を指すキー。「対象月は "YYYY-MM" の文字列」「種別は1語」「判定は1語」
-# の3要素なので NamedTuple にして、``key.target_month`` のように名前で触れるようにした。
-# 3重のタプルより読みやすく、辞書キーにもなる（NamedTuple は hashable）。
+# 出力CSV の行ラベル。対象月の実際の日付文字列 ("2026-08" 等) ではなく、
+# 業務日の属する月を「当月」と、翌月を「来月」と相対ラベルで表す。
+# 内部のレコード絞り込み（``current_by_month`` / ``previous_by_month`` のキー）には
+# 実際の暦月文字列を引き続き使う（案件側の日付と照合する必要があるため）。
+LABEL_CURRENT_MONTH = "当月"
+LABEL_NEXT_MONTH = "来月"
+
+
+# 集計表の 1 行を指すキー。「業務日基準の対象月（**当月/来月のラベル**）」と
+# 「判定」の2要素NamedTuple。``key.target_month`` のように名前で触れるようにした。
+# 2重のタプルより読みやすく、辞書キーにもなる（NamedTuple は hashable）。
+#
+# フィールド名 ``target_month`` は historic に「対象月」を指すが、中身は
+# ``LABEL_CURRENT_MONTH`` / ``LABEL_NEXT_MONTH`` のいずれかになる
+# （実際の暦月 "YYYY-MM" ではない）。
 class RowKey(NamedTuple):
-    target_month: str  # "YYYY-MM"（業務日の属する月をそのまま文字列化）
-    plan: str
+    target_month: str  # "当月" / "来月"（実際の暦月ではない）
     status: str
 
 
 # ``by_row`` のキー・値の型。``Counts`` と ``on_day_done`` のシグネチャで
 # 共有するため NamedTuple の外に置く。
-ByRow = dict[RowKey, dict[datetime.date, int]]
+# キーは ``(対象月ラベル, 判定)`` の素のタプルにする（``RowKey`` NamedTuple だと
+# キーアクセス時の型共変性が崩れて呼び出し側で Literal 警告が出るため）。
+# 値は名称の都合上 NamedTuple ``RowKey`` も用意しておくが、内部のキー操作は
+# タプルで行う。
+ByRow = dict[tuple[str, str], dict[datetime.date, int]]
 
 # 1日ぶん集計が終わったあとに呼ばれるフック。``by_row`` と ``compared_dates`` は
 # ミュータブルで、ここまでの累積状態をそのまま渡す。書き出し側でファイルに
 # 落とせば、途中で例外が出ても途中までが残る。``target_dates_by_month`` は
-# その日までに確定した「対象月 → 対象月だった業務日」の対応（書き出し時点で
-# 未確定の月は省略される）。
+# その日までに確定した「対象月のラベル → その対象月だった業務日」の対応
+# （書き出し時点で未確定のラベルは省略される）。
 DaySavedCallback = Callable[
     [ByRow, set[datetime.date], dict[str, set[datetime.date]] | None],
     None,
 ]
 
-# 業務日 → 対象月のリストを返す関数。``run.py`` が ``_target_months`` を渡す。
-# 1ファイルは1回だけ読み、そのファイルが担当する業務日（自身 = current、直後 =
-# previous）の両方で必要になる対象月すべてに振り分ける。
+# 業務日 → 対象月のリスト（実際の暦月文字列）を返す関数。``run.py`` が
+# ``_target_months`` を渡す。1ファイルは1回だけ読み、そのファイルが担当する
+# 業務日（自身 = current、直後 = previous）の両方で必要になる対象月すべてに
+# 振り分ける。
 TargetMonthsFor = Callable[[datetime.date], list[str]]
 
 
@@ -59,10 +75,10 @@ class Counts(NamedTuple):
     """全ファイル分の集計結果。
 
     - ``compared_dates``: ファイルが存在した日の集合（空セルとの区別用）
-    - ``by_row``: 行キー (対象月, 種別, 判定) → {業務日: 件数}。
+    - ``by_row``: 行キー (当月/来月ラベル, 判定) の ``tuple`` → {業務日: 件数}。
       該当しない日はキーに含まれない（CSV 側で空セルとして扱う）
-    - ``target_dates_by_month``: 対象月 → その月が対象月だった業務日の集合。
-      対象月の行で ``"0"`` と空セルを区別するために ``write_csv`` が参照する
+    - ``target_dates_by_month``: ラベル → そのラベルが対象だった業務日の集合。
+      ラベル基準になったので、``write_csv`` が業務日と当月/来月の対応付けに使う
     """
 
     compared_dates: set[datetime.date]
@@ -89,8 +105,13 @@ def compute_counts(
     （自身のファイル日付 - 1日 = ``current`` 側、直後のファイル日付 - 1日 =
     ``previous`` 側）のそれぞれが必要とする対象月すべてに振り分ける。
 
-    ``target_months_for`` は業務日 → 対象月のリストを返す関数。``run.py``
-    が ``_target_months`` を渡す。
+    ``target_months_for`` は業務日 → 対象月（実際の暦月文字列）のリストを返す
+    関数。``run.py`` が ``_target_months`` を渡す。受け取った暦月文字列を
+    ``_target_months`` が返すと保証している順序（当月=0番目、来月=1番目）
+    にしたがって、出力用の RowKey / ``target_dates_by_month`` のキーには
+    ``当月`` / ``来月`` のラベルを入れて組み立てる。レコード絞り込み用の
+    ``current_by_month`` / ``previous_by_month`` のキーには引き続き実際の
+    暦月文字列をそのまま使う（案件の日付と照合する必要があるため）。
 
     ``range_start`` を渡すと、範囲内のファイルに対して ``(n/total)`` の
     進捗をログに出す。範囲外（比較相手として例外的に読む1ファイル）は
@@ -134,7 +155,8 @@ def compute_counts(
             relevant_months.update(target_months_for(business_dates[index + 1]))
 
         records = read_records(path, plan_prefixes, kinds, rules, progress=progress)
-        # 対象月ごとに「その対象月の行だけ」を取り出した辞書を作る
+        # 対象月ごとに「その対象月の行だけ」を取り出した辞書を作る。
+        # キーは実際の暦月文字列（案件の日付と照合するため）。
         current_by_month: dict[str, dict[str, Record]] = {
             month: {} for month in relevant_months
         }
@@ -147,33 +169,41 @@ def compute_counts(
             # 業務日 = ファイル日付 - 1日（入力ファイルは前日終了時点のデータ）。
             # ``compared_dates`` も業務日で持つ。
             business_date = business_dates[index]
+            # 当該業務日の対象月（実際の暦月文字列）のリスト。
+            # ``_target_months`` の出力順序は「業務日自身の月（0番目）= 当月」、
+            # 「翌月（1番目）= 来月」が保証されている（``run.py`` 側の実装参照）。
             target_months_this_day = target_months_for(business_date)
-            for month in target_months_this_day:
+            for month_index, month in enumerate(target_months_this_day):
+                label = _label_for_month_index(month_index)
                 previous_records = previous_by_month.get(month, {})
                 current_records = current_by_month.get(month, {})
                 added_keys = current_records.keys() - previous_records.keys()
                 postponed_keys = previous_records.keys() - current_records.keys()
-                for key in added_keys:
-                    _inc(by_row, month, current_records[key].plan_prefix, STATUS_ADDED, business_date)
-                for key in postponed_keys:
-                    _inc(by_row, month, previous_records[key].plan_prefix, STATUS_POSTPONED, business_date)
-                # この業務日で対象月だったことを記録。CSV 出力側で「対象月でない業務日は
-                # 空セル」にするために使う。
-                target_dates_by_month.setdefault(month, set()).add(business_date)
+                for _ in added_keys:
+                    _inc(by_row, label, STATUS_ADDED, business_date)
+                for _ in postponed_keys:
+                    _inc(by_row, label, STATUS_POSTPONED, business_date)
+                # この業務日でそのラベルが対象だったことを記録。CSV 出力側で
+                # 「対象ラベルでない業務日は空セル」にするために使う。
+                target_dates_by_month.setdefault(label, set()).add(business_date)
             compared_dates.add(business_date)
             # ログは処理の進行に合わせて直書きする（途中でどこまで進んで
-            # いたかがログから追えるように）。
+            # いたかがログから追えるように）。実際の暦月文字列を見せるのは
+            # 運用者がログから実月を追えるようにするため（ラベルのままだと
+            # どの月の集計か分からなくなる）。
             show_month_suffix = len(target_months_this_day) > 1
             previous_name = previous_path.name if previous_path is not None else "?"
             current_name = path.name
             file_pair = f"（{previous_name} → {current_name}）"
-            for month in target_months_this_day:
-                added = _sum_for(by_row, month, STATUS_ADDED, business_date)
-                postponed = _sum_for(by_row, month, STATUS_POSTPONED, business_date)
+            for month_index, month in enumerate(target_months_this_day):
+                label = _label_for_month_index(month_index)
+                added = _sum_for(by_row, label, STATUS_ADDED, business_date)
+                postponed = _sum_for(by_row, label, STATUS_POSTPONED, business_date)
                 suffix = f" [{month}]" if show_month_suffix else ""
                 logger.info(
-                    "業務日 %s%s: 積み上げ %d 件 / 延期 %d 件%s",
+                    "業務日 %s（%s）%s: 積み上げ %d 件 / 延期 %d 件%s",
                     business_date.isoformat(),
+                    label,
                     suffix,
                     added,
                     postponed,
@@ -202,28 +232,47 @@ def compute_counts(
     )
 
 
+def _label_for_month_index(index: int) -> str:
+    """``_target_months`` の戻り値リスト内の位置を相対ラベルに変換する。
+
+    0 番目 = 業務日自身の月 = ``当月``、1 番目 = 翌月 = ``来月``。
+    2 番目以降の実装には依存しない（``_target_months`` の現状は最大 1 個目まで）。
+    """
+    if index == 0:
+        return LABEL_CURRENT_MONTH
+    if index == 1:
+        return LABEL_NEXT_MONTH
+    raise IndexError(
+        f"_target_months が {index + 1} 個目の月を返しました"
+        "（対応するラベルが定義されていません）"
+    )
+
+
 def _sum_for(
     by_row: ByRow,
-    month: str,
+    label: str,
     status: str,
     date: datetime.date,
 ) -> int:
-    """``(対象月, 種別, status)`` の各行について ``date`` の値を合計する。"""
+    """``(対象月ラベル, status)`` の各行について ``date`` の値を合計する。"""
     return sum(
         values.get(date, 0)
         for key, values in by_row.items()
-        if key.target_month == month and key.status == status
+        if key == (label, status)
     )
 
 
 def _inc(
     by_row: ByRow,
-    month: str,
-    plan_prefix: str,
+    label: str,
     status: str,
     date: datetime.date,
 ) -> None:
-    """(対象月, 種別, 判定) のセルに 1 を足す。"""
-    key = RowKey(month, plan_prefix, status)
+    """(対象月ラベル, 判定) のセルに 1 を足す。
+
+    種別（標準/上位）の区別はしない（合算）。``run.py`` 側で ``PLAN_PREFIXES``
+    を絞り込み条件として使うのはそのまま。
+    """
+    key = (label, status)
     per_date = by_row.setdefault(key, {})
     per_date[date] = per_date.get(date, 0) + 1

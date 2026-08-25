@@ -15,6 +15,9 @@ src/run.py — 処理の本体
 **対象月は業務日基準**。業務日 D の列は、D の月で案件を絞る。実行日が
 8 月でも、業務日 1 月の列は 1 月の案件だけを対象にする（= 1 月時点の
 積み上げ・延期を 1 月の案件について見る、という集計の意図に沿う）。
+
+出力CSV の行は「当月/来月ラベル × 判定（積み上げ/延期）」の固定 4 行構成
+（種別（標準/上位）の内訳行は無くなり、合算のみ）。
 """
 
 import datetime
@@ -27,7 +30,7 @@ from comken.core import DateFileFinder, date_in_name, today
 from comken.core.clock import month_end
 
 from src.diff import ByRow, DaySavedCallback, compute_counts
-from src.report import COL_TARGET_MONTH, last_date_in_csv, read_existing, write_csv
+from src.report import ROW_LABELS, last_date_in_csv, read_existing, write_csv
 from src.source import load_rules
 
 logger = logging.getLogger(__name__)
@@ -43,8 +46,11 @@ def run() -> Path:
     plan_prefixes = tuple(config.FILTER.PLAN_PREFIXES)
     kinds = tuple(config.FILTER.KINDS)
     rules = load_rules()
-    input_folder = config.FILES.INPUT_FOLDER
-    output_folder = config.REPORT.OUTPUT_FOLDER
+    # comken の ``Config`` は絶対パスしか自動で ``Path`` に変換しないため、
+    # 相対パスが書かれていると ``/`` 演算子で ``TypeError`` になる。``Path()``
+    # で明示的に包むことで絶対・相対どちらの設定でも動く。
+    input_folder = Path(config.FILES.INPUT_FOLDER)
+    output_folder = Path(config.REPORT.OUTPUT_FOLDER)
     output_path = output_folder / OUTPUT_NAME
 
     # ローリングモード判定（[FILES] ROLLING_WINDOW_DAYS）。キーが無い／読み取れない
@@ -98,9 +104,10 @@ def run() -> Path:
         )
         return output_path
 
-    # 業務日基準の対象月。読み込み範囲全体で登場する対象月の和集合を取る。
-    # 実行日基準の単一グループではないので、開始ログは「範囲内で出現しうる対象月」
-    # の全体を出す（業務日ごとのログにはその日に使った対象月が出る）。
+    # 業務日基準の対象月（実際の暦月文字列）。読み込み範囲全体で登場する
+    # 対象月の和集合を取る。実行日基準の単一グループではないので、開始ログは
+    # 「範囲内で出現しうる対象月」の全体を出す（業務日ごとのログにはその日に
+    # 使った対象月が出る）。
     target_months_in_range = _target_months_in_range(
         start_date, end_date, rolling_window_days=rolling_window_days
     )
@@ -134,16 +141,11 @@ def run() -> Path:
     # 合併して列見出しを作る（未比較の区間があると再開位置がズレるため）。
     existing_dates = _dates_from_existing(existing)
 
-    # 書き出す行の (対象月, 種別) の組を呼び出し側で組み立てて渡す。
-    # 読み込み範囲全体で対象月になる月の行を必ず作り、既存 CSV にある対象月も
-    # 残す（古い対象月の行を消さない）。ローリングモードでは「直近 N 日分の窓に
-    # 登場した月だけ」にする（窓の外に出た古い対象月の行は捨てる）。
-    existing_months = _months_from_existing(existing)
-    if rolling_window_days is None:
-        months_for_rows = sorted(set(target_months_in_range) | existing_months)
-    else:
-        months_for_rows = list(target_months_in_range)
-    row_keys = [(month, plan) for month in months_for_rows for plan in plan_prefixes]
+    # 書き出す行は常に当月/来月の固定 2 ラベル（= 固定 4 行）。古い対象月や
+    # 種別（標準/上位）の内訳行はもう持たない（年別累積やローリングで変わる）。
+    # 既存 CSV に残っていた古いバージョンの行は列構成が大きく変わった以上、
+    # 暗黙には引き継がない（``write_csv`` 側で黙って捨てる）。
+    row_keys = list(ROW_LABELS)
 
     save_callback, save_sizes = _make_day_saver(
         output_path=output_path,
@@ -151,7 +153,6 @@ def run() -> Path:
         existing_dates=existing_dates,
         row_keys=row_keys,
         window_floor=range_floor if rolling_window_days is not None else None,
-        keep_leftover_rows=rolling_window_days is None,
     )
     # 1日ぶん終わるたびに CSV を途中保存することを最初に1回だけ伝える。
     # 長い処理で「今どこまで保存されているのか」がログから追えるようにするための
@@ -262,6 +263,10 @@ def _target_months(
 
     月末が 12 月のときは翌月が翌年 1 月になるので、ラベル計算は年跨ぎも
     正しく扱う（``month_end`` は純粋な暦計算で祝日に依存しない）。
+
+    戻り値は **必ず業務日自身の月が 0 番目、翌月が（あれば）1 番目** という
+    順序を保つ（``src/diff.py`` の ``_label_for_month_index`` がこの順序に
+    依存して「当月」「来月」のラベルへ変換する）。
     """
     months = [f"{business_date.year:04d}-{business_date.month:02d}"]
     if rolling_window_days is not None:
@@ -309,7 +314,7 @@ def _dates_from_existing(existing: list[dict[str, object]]) -> list[datetime.dat
     """既存 CSV の1行目から、日付ヘッダとして解釈できたものを抽出する。"""
     if not existing:
         return []
-    first_col_index = 3  # 対象月 / 種別 / 判定 の3列のあと
+    first_col_index = 2  # 対象月 / 判定 の2列のあと
     dates: list[datetime.date] = []
     for header in list(existing[0].keys())[first_col_index:]:
         text = header.strip()
@@ -318,25 +323,6 @@ def _dates_from_existing(existing: list[dict[str, object]]) -> list[datetime.dat
         except ValueError:
             continue
     return dates
-
-
-def _months_from_existing(existing: list[dict[str, object]]) -> set[str]:
-    """既存 CSV の「対象月」列を読み取り、``"YYYY-MM"`` の集合を返す。
-
-    既存の対象月の行を残すために使う。解釈できない行はスキップする
-    （手編集などで壊れた行があっても落とさず、後段の ``write_csv`` が
-    ``leftover_rows`` としてそのまま残すので問題ない）。
-    """
-    months: set[str] = set()
-    for row in existing:
-        value = row.get(COL_TARGET_MONTH, "")
-        if not value:
-            continue
-        text = str(value).strip()
-        # CSV の対象月は既に ``YYYY-MM`` 形式。空文字でなければそのまま採用
-        if text:
-            months.add(text)
-    return months
 
 
 def _all_dated_files(folder: Path) -> list[tuple[datetime.date, Path]]:
@@ -382,14 +368,13 @@ def _make_day_saver(
     output_path: Path,
     start_date: datetime.date,
     existing_dates: list[datetime.date],
-    row_keys: list[tuple[str, str]],
+    row_keys: list[str],
     window_floor: datetime.date | None = None,
-    keep_leftover_rows: bool = True,
 ) -> tuple[DaySavedCallback, list[tuple[int, int]]]:
     """``compute_counts`` の ``on_day_done`` フックを組み立てる。
 
     日1日ぶんの突き合わせが終わるたびに呼ばれ、ここまでの累積状態を CSV へ
-    書き出す。CSV は少量のデータ（8行 × 数百列で数KB）なので、毎回まるごと
+    書き出す。CSV は少量のデータ（4行 × 数百列で数KB）なので、毎回まるごと
     書き直しても Excel 1ファイルの読み込み（数万行）に比べて無視できる。
 
     ただし、保存のたびに ``end_date`` まで全部の列を書き出すと、未比較の区間も
@@ -399,9 +384,9 @@ def _make_day_saver(
 
     ローリングモードでは「直近 N 日の窓」があり、``window_floor`` が指定された
     ときは ``existing_dates`` のうち窓の外にある日付を捨ててから range と合併する
-    （= 窓の外に出た古い列を毎回保存で消す）。``keep_leftover_rows`` は
-    ``write_csv`` へのフラグで、``row_keys`` に無い既存行を保持するかを制御する。
-    年次累積モード（既定）は両方とも ``None`` / ``True`` で、既存挙動と完全同一。
+    （= 窓の外に出た古い列を毎回保存で消す）。行は常に固定 4 行なので、窓の
+    外に出た行を捨てるような仕組みはもう要らない。
+    年次累積モード（既定）は ``window_floor=None`` で、既存挙動と完全同一。
 
     戻り値は ``(保存コールバック, これまでの保存サイズのリスト)``。``save_sizes``
     には ``write_csv`` が返した ``(行数, 列数)`` が毎回追加される。``run.py``
@@ -429,7 +414,6 @@ def _make_day_saver(
         dates = [(d, d in compared_dates) for d in all_dates]
         sizes.append(write_csv(
             output_path, by_row, dates, row_keys, target_dates_by_month,
-            keep_leftover_rows=keep_leftover_rows,
         ))
 
     return _save, sizes
