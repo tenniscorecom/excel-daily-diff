@@ -41,8 +41,8 @@ def run() -> Path:
     plan_prefixes = tuple(config.FILTER.PLAN_PREFIXES)
     kinds = tuple(config.FILTER.KINDS)
     rules = load_rules()
-    input_folder = Path(config.FILES.INPUT_FOLDER)
-    output_folder = Path(config.REPORT.OUTPUT_FOLDER)
+    input_folder = config.FILES.INPUT_FOLDER
+    output_folder = config.REPORT.OUTPUT_FOLDER
     output_path = output_folder / OUTPUT_NAME
 
     dated_files = _all_dated_files(input_folder)
@@ -251,7 +251,7 @@ def _all_dated_files(folder: Path) -> list[tuple[datetime.date, Path]]:
     書く。``DateFileFinder.dated`` は ``*`` をワイルドカード扱いせず文字どおりの
     前方一致で探すので、ここで ``*`` を落として渡す。
     """
-    prefix = str(config.FILES.FILE_PATTERN).replace("*", "")
+    prefix = config.FILES.FILE_PATTERN.replace("*", "")
     found = DateFileFinder(folder).dated(prefix)
     return sorted(
         (date, path) for path in found if (date := date_in_name(path.name)) is not None

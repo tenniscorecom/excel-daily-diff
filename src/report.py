@@ -117,7 +117,7 @@ def read_existing(path: Path) -> list[ExistingRow]:
         return []
     with CSV(path) as csv:
         table = csv.read()
-    return [dict(row) for row in table.read()]
+    return table.read_rows()
 
 
 def last_date_in_csv(existing: list[ExistingRow]) -> datetime.date | None:

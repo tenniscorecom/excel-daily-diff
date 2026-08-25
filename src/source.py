@@ -66,7 +66,7 @@ def read_records(
     # 設定は起動時に決まる値で、行ごとに変わらない。ループの外で1回だけ読む
     raw_sheet_name = config.SOURCE.SHEET_NAME
     sheet_name = raw_sheet_name if isinstance(raw_sheet_name, str) else raw_sheet_name[0]
-    header_row = int(config.SOURCE.HEADER_ROW)
+    header_row = config.SOURCE.HEADER_ROW
     key_column = config.SOURCE.KEY_COLUMN
     date_column = config.SOURCE.DATE_COLUMN
     plan_column = config.SOURCE.PLAN_COLUMN
