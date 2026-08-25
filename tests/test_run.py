@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 from comken.toolbox.csv import CSV
 
-from src.run import CONDITIONS_NAME, OUTPUT_NAME, _range_floor, _target_months, run
+from src.run import OUTPUT_NAME, _range_floor, _target_months, run
 
 
 def _config_text(input_folder: Path, output_folder: Path) -> str:
@@ -33,11 +33,15 @@ OUTPUT_FOLDER = {output_folder}
 
 
 @pytest.fixture
-def setup_run(config_for_tests):
-    """input/output フォルダを tmp に作り、config.ini を読み込む。"""
+def setup_run(config_for_tests, monkeypatch):
+    """input/output フォルダを tmp に作り、config.ini を読み込む。
+
+    ``run()`` は ``comken.core.today`` から現在日付を取る（テストのたびに違う
+    「今日」を使う）ので、ここで固定値を差し込む。
+    """
 
     def _setup(
-        tmp_path: Path, *, kinds_value: str = "[完了, 予定]"
+        tmp_path: Path, *, kinds_value: str = "[完了, 予定]", today_date: datetime.date | None = None
     ) -> tuple[Path, Path]:
         input_folder = tmp_path / "input"
         output_folder = tmp_path / "output"
@@ -46,27 +50,28 @@ def setup_run(config_for_tests):
         config_for_tests(_config_text(input_folder, output_folder).replace(
             "KINDS = [完了, 予定]", f"KINDS = {kinds_value}"
         ))
+        if today_date is not None:
+            # ``src.run.today`` を固定値で差し替える（テストのたびに違う「今日」を使う）。
+            # ``run.py`` は ``from comken.core import today`` で束縛しているので、
+            # ``comken.core.today`` だけ差し替えても src.run 側に届かない
+            monkeypatch.setattr("src.run.today", lambda: today_date)
         return input_folder, output_folder
 
     return _setup
 
 
-def test_target_months_uses_only_current_month_before_the_23rd() -> None:
-    assert _target_months(datetime.date(2026, 4, 10)) == [(2026, 4)]
-
-
-def test_target_months_adds_next_month_from_the_23rd_onwards() -> None:
-    assert _target_months(datetime.date(2026, 4, 23)) == [(2026, 4), (2026, 5)]
-
-
-def test_target_months_wraps_year_boundary_in_december() -> None:
-    assert _target_months(datetime.date(2026, 12, 25)) == [(2026, 12), (2027, 1)]
+def test_target_months_uses_business_date_month() -> None:
+    """業務日 = その業務日の属する月の文字列。1つの業務日に対して1つの対象月。"""
+    assert _target_months(datetime.date(2026, 4, 10)) == ["2026-04"]
+    assert _target_months(datetime.date(2026, 12, 25)) == ["2026-12"]
 
 
 def test_run_starts_from_oldest_file_when_no_csv_exists(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 25)
+    )
     # 2/28 の比較相手として 2025/12/20 を置く（範囲外だが例外的に開かれる）
     make_book(input_folder / "一覧_20251220.xlsx", [["stay", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["stay", "2026-04-10", "標準A", "完了"]])
@@ -83,7 +88,7 @@ def test_run_starts_from_oldest_file_when_no_csv_exists(
         [["stay", "2026-04-10", "標準A", "完了"]],
     )
 
-    run(datetime.date(2026, 4, 25))
+    run()
 
     csv_path = output_folder / OUTPUT_NAME
     with CSV(csv_path) as csv:
@@ -107,7 +112,9 @@ def test_run_writes_blank_for_business_days_without_files(
 
     一覧_YYYYMMDD.xlsx は前日終了時点のデータなので、列は業務日（= ファイル日付 - 1日）で並ぶ。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 25)
+    )
     # 2/28 の比較相手として 2025/12/20 を置く
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -117,7 +124,7 @@ def test_run_writes_blank_for_business_days_without_files(
     # ファイル（=ファイル日付 4/22）が無い
     make_book(input_folder / "一覧_20260423.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
 
-    run(datetime.date(2026, 4, 25))
+    run()
 
     csv_path = output_folder / OUTPUT_NAME
     with CSV(csv_path) as csv:
@@ -136,13 +143,15 @@ def test_run_writes_blank_for_business_days_without_files(
 def test_run_continues_from_last_csv_date_and_keeps_existing_columns(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 25)
+    )
     # 1回目: 2025/12/20（2/28 の比較相手）, 2/28, 4/20, 4/21 を実行
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    run(datetime.date(2026, 4, 25))
+    run()
     with CSV(output_folder / OUTPUT_NAME) as csv:
         first_rows = list(csv.read())
     # 業務日 4/20 列 = 一覧_20260421.xlsx vs 一覧_20260420.xlsx の比較結果
@@ -151,7 +160,7 @@ def test_run_continues_from_last_csv_date_and_keeps_existing_columns(
     # 2回目: 4/22, 4/23 のファイルを追加して再実行
     make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260423.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    run(datetime.date(2026, 4, 25))
+    run()
 
     with CSV(output_folder / OUTPUT_NAME) as csv:
         second_rows = list(csv.read())
@@ -168,238 +177,82 @@ def test_run_continues_from_last_csv_date_and_keeps_existing_columns(
     assert len(matching) == 1
 
 
-def test_run_rebuilds_full_period_when_conditions_change(
-    tmp_path: Path, make_book, config_for_tests
-) -> None:
-    input_folder = tmp_path / "input"
-    output_folder = tmp_path / "output"
-    input_folder.mkdir()
-    output_folder.mkdir()
-    config_for_tests(_config_text(input_folder, output_folder))
-
-    # 1回目: 全ファイルを実行（KINDS = [完了, 予定]）。2025/12/20 は 2/28 の比較相手
-    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    run(datetime.date(2026, 4, 25))
-    with CSV(output_folder / OUTPUT_NAME) as csv:
-        first_rows = list(csv.read())
-    first_4_21 = _cell(first_rows, "2026-04", "標準", "積み上げ", "2026-04-21")
-
-    # config.ini を書き換える（KINDS を変える）→ 全期間を作り直す
-    config_for_tests(_config_text(input_folder, output_folder).replace(
-        "KINDS = [完了, 予定]", "KINDS = [完了]"
-    ))
-    run(datetime.date(2026, 4, 25))
-
-    with CSV(output_folder / OUTPUT_NAME) as csv:
-        second_rows = list(csv.read())
-    # 4/21 の値がそのまま残る（再計算された結果）
-    assert _cell(second_rows, "2026-04", "標準", "積み上げ", "2026-04-21") == first_4_21
-
-
-def test_run_keeps_old_target_month_rows_when_target_months_change(
-    tmp_path: Path, make_book, setup_run
-) -> None:
-    """古い対象月の行は残しつつ、業務日 23日 を境に新しい対象月の行が追加される。
-
-    1回目: 業務日 4/20, 4/21（day < 23）→ 4月のみ対象 → 4月の行だけ
-    2回目: ファイル 4/24 を追加 → 業務日 4/23 が含まれる → 5月の対象月も追加
-
-    4月の行は残り（既存 CSV の対象月の行が消えない）、5月の行が新たに作られる。
-    実行日（= 5月）が何であっても、業務日 23日 をまたぐまでは 5月の行は作られない。
-    """
-    input_folder, output_folder = setup_run(tmp_path)
-    # 比較相手用に 2025/12/20 と 2/28 を置く
-    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    run(datetime.date(2026, 4, 25))
-    with CSV(output_folder / OUTPUT_NAME) as csv:
-        first_rows = list(csv.read())
-    # 業務日 4/19, 4/20 (day < 23) → 4月のみ対象 → 4月の行だけ
-    first_target_months = {row["対象月"] for row in first_rows}
-    assert "2026-04" in first_target_months
-    assert "2026-05" not in first_target_months
-
-    # ファイル 4/24 を追加（業務日 4/23 = day 23 を処理）。実行日は 5月にする
-    make_book(
-        input_folder / "一覧_20260423.xlsx",
-        [["b", "2026-04-11", "標準B", "予定"]],
-    )
-    make_book(
-        input_folder / "一覧_20260424.xlsx",
-        [["b", "2026-04-11", "標準B", "予定"]],
-    )
-    run(datetime.date(2026, 5, 25))
-
-    with CSV(output_folder / OUTPUT_NAME) as csv:
-        second_rows = list(csv.read())
-
-    # 4月の行は残っている
-    assert any(row["対象月"] == "2026-04" for row in second_rows)
-    # 業務日 4/23 (day >= 23) が対象月の境界をまたぐので 5月の行が新たに作られる
-    assert any(row["対象月"] == "2026-05" for row in second_rows)
-
-
 def test_run_picks_target_months_from_business_dates_not_run_date(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     """対象月は実行日ではなく業務日で決まる。実行日が 5月でも、業務日 4月の
-    列は 4月の案件だけを対象にする（旧仕様では 4月+5月が対象になっていた）。
+    列は 4月の案件だけを対象にする。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 5, 25)
+    )
     # 比較相手として 2025/12/20 を置く（範囲外だが例外的に開かれる）
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
 
-    run(datetime.date(2026, 5, 25))  # 実行日は 5月、業務日は 4/19・4/20
+    run()  # 実行日は 5月、業務日は 4/19・4/20
 
     csv_path = output_folder / OUTPUT_NAME
     with CSV(csv_path) as csv:
         rows = list(csv.read())
     target_months = {row["対象月"] for row in rows}
-    # 業務日 4/19・4/20（day < 23）の対象月は 4月のみ
+    # 業務日 4/19・4/20 の対象月は 4月のみ
     assert "2026-04" in target_months
-    # 5月・6月 の行は作られない（業務日が 23日を迎えていないため）
+    # 5月・6月の行は作られない（業務日が 4月の範囲内）
     assert "2026-05" not in target_months
     assert "2026-06" not in target_months
 
 
-def test_run_picks_both_months_on_business_date_23(
+def test_run_row_has_values_only_for_target_month_dates(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """業務日が 23日以降なら、当月と翌月の両方が対象月になる。
+    """各対象月の行は、その月が対象月だった業務日の列にだけ値を持つ。
 
-    業務日 4/23（= ファイル日付 4/24）で対象月は 4月と5月。実行日が 4月でも
-    5月でも同じ結果になる。
+    1月の業務日範囲では 1月のレコードだけが対象になる。
     """
-    input_folder, output_folder = setup_run(tmp_path)
-    # 4/22 ファイルの比較相手として 4/20 を置く
-    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(
-        input_folder / "一覧_20260423.xlsx",
-        [
-            ["apr", "2026-04-10", "標準A", "完了"],
-            ["may", "2026-05-10", "標準B", "予定"],
-        ],
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 1, 25)
     )
-    # 業務日 4/23 (file 4/24) で 5月のレコードが消える
-    make_book(
-        input_folder / "一覧_20260424.xlsx",
-        [["apr", "2026-04-10", "標準A", "完了"]],
-    )
-
-    run(datetime.date(2026, 4, 25))  # 実行日は 4月、業務日 4/23 が対象月の境界
-
-    csv_path = output_folder / OUTPUT_NAME
-    with CSV(csv_path) as csv:
-        rows = list(csv.read())
-    target_months = {row["対象月"] for row in rows}
-    assert "2026-04" in target_months
-    assert "2026-05" in target_months
-    # 業務日 4/23 で may が消えた → 5月の行に「延期 1」
-    assert _cell(rows, "2026-05", "標準", "延期", "2026-04-23") == "1"
-
-
-def test_run_picks_only_one_month_on_business_date_22(
-    tmp_path: Path, make_book, setup_run
-) -> None:
-    """業務日 4/22（= ファイル日付 4/23）の対象月は 4月のみ。23日未満なので翌月は含まない。"""
-    input_folder, output_folder = setup_run(tmp_path)
-    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(
-        input_folder / "一覧_20260423.xlsx",
-        [
-            ["apr", "2026-04-10", "標準A", "完了"],
-            ["may", "2026-05-10", "標準B", "予定"],
-        ],
-    )
-
-    run(datetime.date(2026, 4, 25))  # 業務日 4/22 (file 4/23) まで
-
-    csv_path = output_folder / OUTPUT_NAME
-    with CSV(csv_path) as csv:
-        rows = list(csv.read())
-    target_months = {row["対象月"] for row in rows}
-    # 業務日 4/22 は 4月のみ対象
-    assert "2026-04" in target_months
-    # 業務日が 23日を迎えていないので、5月の行は作られない
-    assert "2026-05" not in target_months
-
-
-def test_run_picks_two_months_on_business_date_jan_23(
-    tmp_path: Path, make_book, setup_run
-) -> None:
-    """業務日 1/23（= ファイル日付 1/24）の対象月は 1月と2月の両方。
-
-    月をまたぐ境界（1月 → 2月）でも、業務日 23日以降なら翌月も対象に含める。
-    """
-    input_folder, output_folder = setup_run(tmp_path)
-    # 比較相手として前年のファイルを置く（範囲外だが例外的に開かれる）
+    # 業務日 1/22 まで: 1月の対象月のみ
     make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20251231.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260123.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
-    # 業務日 1/23 = ファイル日付 1/24。1月と2月のレコードが両方現れる
+    make_book(input_folder / "一覧_20260122.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
+    # 業務日 1/22 = ファイル 1/23。x が消える
+    make_book(input_folder / "一覧_20260123.xlsx", [])
+
+    # 業務日 1/23 = ファイル 1/24。jan が増える（1月の対象月のみ）
     make_book(
         input_folder / "一覧_20260124.xlsx",
         [
             ["jan", "2026-01-15", "標準A", "完了"],
-            ["feb", "2026-02-05", "標準B", "予定"],
         ],
     )
 
-    run(datetime.date(2026, 1, 25))  # 実行日が 1月、業務日 1/23 を処理
+    run()
 
     csv_path = output_folder / OUTPUT_NAME
     with CSV(csv_path) as csv:
         rows = list(csv.read())
-    target_months = {row["対象月"] for row in rows}
-    # 業務日 1/23 → 1月と2月の両方が対象月
-    assert "2026-01" in target_months
-    assert "2026-02" in target_months
-    # 業務日 1/23 で jan が新規 → 1月の行に「積み上げ 1」
+
+    # 業務日 1/22: 1月の対象月のみ。x が消えた → 1月の行に「延期 1」
+    assert _cell(rows, "2026-01", "標準", "延期", "2026-01-22") == "1"
+
+    # 業務日 1/23: 1月の対象月、jan が増えた → 1月の行に「積み上げ 1」
     assert _cell(rows, "2026-01", "標準", "積み上げ", "2026-01-23") == "1"
-    # feb は 2月の対象月行に「積み上げ 1」
-    assert _cell(rows, "2026-02", "標準", "積み上げ", "2026-01-23") == "1"
 
 
-def test_run_picks_only_one_month_on_business_date_jan_22(
-    tmp_path: Path, make_book, setup_run
-) -> None:
-    """業務日 1/22（= ファイル日付 1/23）の対象月は 1月のみ。23日未満なので2月は含まない。"""
-    input_folder, output_folder = setup_run(tmp_path)
-    make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20251231.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260122.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
-    # 業務日 1/22 = ファイル日付 1/23。2月のレコードだけ新しく現れる
-    make_book(
-        input_folder / "一覧_20260123.xlsx",
-        [
-            ["feb", "2026-02-05", "標準B", "予定"],
-        ],
-    )
-
-    run(datetime.date(2026, 1, 25))  # 業務日 1/22 まで
-
-    csv_path = output_folder / OUTPUT_NAME
-    with CSV(csv_path) as csv:
-        rows = list(csv.read())
-    target_months = {row["対象月"] for row in rows}
-    # 業務日 1/22 → 1月のみ対象
-    assert "2026-01" in target_months
-    # 2月のレコードは business_date=1/22 時点で 2月が対象月でないため集計されない
-    assert "2026-02" not in target_months
+def _row_if_exists(
+    rows: list[dict[str, object]],
+    target_month: str,
+    plan: str,
+    status: str,
+) -> dict[str, object] | None:
+    for row in rows:
+        if row["対象月"] == target_month and row["種別"] == plan and row["判定"] == status:
+            return row
+    return None
 
 
 def test_run_reads_each_file_once_across_month_boundary(
@@ -408,14 +261,16 @@ def test_run_reads_each_file_once_across_month_boundary(
     """月をまたぐ業務日（1/31 と 2/1）で、一覧_20260201.xlsx が両方の計算に使われるが
     1回しか読まれない。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 2, 3)
+    )
     # 1/30 ファイルの比較相手として 2025/12/20 を置く
     make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260130.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
     # 月末のファイル（1/31 終了時点 → 業務日 1/30 で使う）
     make_book(input_folder / "一覧_20260131.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
     # 月またぎ。一覧_20260201.xlsx は:
-    #   - 業務日 1/31 (= 1/31 file vs 2/1 file) の current → 対象月 1月 と 2月
+    #   - 業務日 1/31 (= 1/31 file vs 2/1 file) の current → 対象月 1月
     #   - 業務日 2/1  (= 2/1 file vs 2/2 file) の previous → 対象月 2月
     make_book(
         input_folder / "一覧_20260201.xlsx",
@@ -446,72 +301,13 @@ def test_run_reads_each_file_once_across_month_boundary(
         }
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 2, 3))
+        run()
 
     opened_names = [p.name for p in opened]
     # 一覧_20260201.xlsx は1回しか読まれない
     assert opened_names.count("一覧_20260201.xlsx") == 1
     # すべてのファイルが1回ずつ
     assert len(opened_names) == len(set(opened_names))
-
-
-def test_run_row_has_values_only_for_target_month_dates(
-    tmp_path: Path, make_book, setup_run
-) -> None:
-    """各対象月の行は、その月が対象月だった業務日の列にだけ値を持つ。
-
-    業務日 1月の列では1月のレコード、1/23以降の列では2月のレコードも対象に
-    なる。1月の行（対象月=2026-01）の業務日 1/23 列には、1月のレコードぶんの
-    数値が入る（feb は2月の行に入るので、1月の行の1/23列には影響しない）。
-    """
-    input_folder, output_folder = setup_run(tmp_path)
-    # 業務日 1/22 まで: 1月の対象月のみ
-    make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20251231.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260122.xlsx", [["x", "2026-01-10", "標準A", "完了"]])
-    # 業務日 1/22 = ファイル 1/23。x が消える
-    make_book(input_folder / "一覧_20260123.xlsx", [])
-
-    # 業務日 1/23 = ファイル 1/24。jan と feb が増える（1月と2月の対象月両方）
-    make_book(
-        input_folder / "一覧_20260124.xlsx",
-        [
-            ["jan", "2026-01-15", "標準A", "完了"],
-            ["feb", "2026-02-05", "標準B", "予定"],
-        ],
-    )
-    # 業務日 1/23 = ファイル 1/24 で jan と feb がいる → 1月の行に jan (積み上げ 1)
-
-    run(datetime.date(2026, 1, 25))
-
-    csv_path = output_folder / OUTPUT_NAME
-    with CSV(csv_path) as csv:
-        rows = list(csv.read())
-
-    # 業務日 1/22: 1月の対象月のみ。x が消えた → 1月の行に「延期 1」
-    assert _cell(rows, "2026-01", "標準", "延期", "2026-01-22") == "1"
-    # 業務日 1/22 で 2月のレコードはまだ無いので、2月の行（ある場合）の値は空
-    row_2 = _row_if_exists(rows, "2026-02", "標準", "延期")
-    if row_2 is not None:
-        # 業務日 1/22 は 2月が対象月でない → 値は空
-        assert row_2.get("2026-01-22", "") == ""
-
-    # 業務日 1/23: 1月の対象月、jan が増えた → 1月の行に「積み上げ 1」
-    assert _cell(rows, "2026-01", "標準", "積み上げ", "2026-01-23") == "1"
-    # 業務日 1/23 は 2月も対象月。feb が増えた → 2月の行に「積み上げ 1」
-    assert _cell(rows, "2026-02", "標準", "積み上げ", "2026-01-23") == "1"
-
-
-def _row_if_exists(
-    rows: list[dict[str, object]],
-    target_month: str,
-    plan: str,
-    status: str,
-) -> dict[str, object] | None:
-    for row in rows:
-        if row["対象月"] == target_month and row["種別"] == plan and row["判定"] == status:
-            return row
-    return None
 
 
 def test_range_floor_returns_first_day_of_current_year() -> None:
@@ -534,7 +330,9 @@ def test_run_does_not_open_files_older_than_range_floor(
 
     1月実行時、前年12月のファイルは範囲外だが、比較相手として最も新しい1件だけが読まれる。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 1, 15)
+    )
     # 1月15日実行 → 下限は今年の1月1日
     # 前年12月のファイルのうち、最も新しい 12/20 が 1/10 の比較相手として開かれる
     make_book(input_folder / "一覧_20251201.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
@@ -551,7 +349,7 @@ def test_run_does_not_open_files_older_than_range_floor(
         return {}
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 1, 15))
+        run()
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
@@ -574,7 +372,9 @@ def test_run_skips_files_older_than_the_predecessor(
 
     1月実行時、前年12月のファイルが複数あっても、比較相手として読まれるのは最も新しい1件だけ。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 1, 15)
+    )
     # 1月15日実行 → 下限は今年の1月1日
     # 比較相手の候補が 12/15, 12/18, 12/20 と3つあるが、開かれるのは 12/20 だけ
     make_book(input_folder / "一覧_20251215.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
@@ -590,7 +390,7 @@ def test_run_skips_files_older_than_the_predecessor(
         return {}
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 1, 15))
+        run()
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
@@ -612,7 +412,9 @@ def test_run_reads_only_one_predecessor_outside_the_range(
 
     1月実行時、前年12月のファイルが複数あっても、最も新しい1件だけが比較相手として読まれる。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 1, 15)
+    )
     # 1月15日実行 → 下限は今年の1月1日
     # 前年12月のファイルが複数：12/01, 12/05, 12/20
     # 1/10 の比較相手として開かれるのは最も新しい 12/20 だけ
@@ -630,7 +432,7 @@ def test_run_reads_only_one_predecessor_outside_the_range(
         return {}
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 1, 15))
+        run()
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
@@ -653,7 +455,9 @@ def test_run_only_opens_one_predecessor_when_multiple_outside_exist(
 
     1月実行時、前年12月のファイルが3つあっても、比較相手として読まれるのは最も新しい1件だけ。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 1, 15)
+    )
     # 1月15日実行 → 下限は今年の1月1日
     # 前年12月のファイルが3つ：12/15, 12/18, 12/20
     # 1/10 の比較相手として開かれるのは最も新しい 12/20 だけ
@@ -670,7 +474,7 @@ def test_run_only_opens_one_predecessor_when_multiple_outside_exist(
         return {}
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 1, 15))
+        run()
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
@@ -689,7 +493,9 @@ def test_run_does_not_open_files_after_today(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     """今日より後の日付のファイルは開かれない。"""
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 10)
+    )
     # 4月10日実行 → 範囲は 1/1〜4/10
     # 比較相手用に 2025/12/20 を置く（範囲外だが例外的に開かれる）
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-05", "標準A", "完了"]])
@@ -707,7 +513,7 @@ def test_run_does_not_open_files_after_today(
         return {}
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 4, 10))
+        run()
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
@@ -726,7 +532,9 @@ def test_run_skips_when_no_files_in_range(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     """範囲（今年の1月1日〜今日）内にファイルが無いとき、落ちずにログを出して終わる。"""
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 1, 10)
+    )
     # 1月10日実行 → 範囲は 1/1〜1/10。範囲内のファイルが無く、前年の12月ファイルも
     # in_range が空なので比較相手としても読まれない
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2025-12-20", "標準A", "完了"]])
@@ -739,7 +547,7 @@ def test_run_skips_when_no_files_in_range(
 
     with patch("src.diff.read_records", side_effect=_capture):
         # 落ちないことを確認（戻り値は output_path）
-        result = run(datetime.date(2026, 1, 10))
+        result = run()
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     # ファイルは何も開かれない
@@ -751,7 +559,9 @@ def test_run_writes_csv_after_each_day(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     """1日ぶん計算するたびに CSV が書き出される（N 件ごとに区切らない）。"""
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 25)
+    )
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -764,10 +574,13 @@ def test_run_writes_csv_after_each_day(
 
     def _spy_write_csv(path, by_row, dates, row_keys, target_dates_by_month=None):
         save_calls.append(path)
-        original_write_csv(path, by_row, dates, row_keys, target_dates_by_month)
+        # 本物 ``write_csv`` は ``(行数, 列数)`` を返すので、spy もその戻り値を
+        # そのまま返す（``_make_day_saver`` 内の ``sizes.append`` が None で
+        # 落ちないようにするため）
+        return original_write_csv(path, by_row, dates, row_keys, target_dates_by_month)
 
     with patch("src.run.write_csv", side_effect=_spy_write_csv):
-        run(datetime.date(2026, 4, 25))
+        run()
 
     # targets = [12/20(predecessor), 2/28, 4/20, 4/21, 4/22, 4/23] のうち、
     # 比較が起きるのは2回目以降なので 5 回（2/28, 4/20, 4/21, 4/22, 4/23）。
@@ -783,7 +596,9 @@ def test_run_keeps_partial_progress_when_read_fails_midway(
     列見出しは業務日なので、業務日 4/21（一覧_20260422.xlsx 由来）は保存済み、
     業務日 4/22（一覧_20260423.xlsx 由来）は保存されていない。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 25)
+    )
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -805,7 +620,7 @@ def test_run_keeps_partial_progress_when_read_fails_midway(
     with caplog.at_level(logging.INFO):
         with pytest.raises(RuntimeError):
             with patch("src.diff.read_records", side_effect=_fail_on_sixth):
-                run(datetime.date(2026, 4, 25))
+                run()
 
     # 例外までに書き出した CSV にはそこまでの分の列が残っている
     assert csv_path.exists()
@@ -826,7 +641,9 @@ def test_run_resumes_from_last_csv_date_after_crash(
     列見出しは業務日なので、4/22（業務日）の列は「4/22 vs 4/23」 = 一覧_20260423.xlsx で
     比較した結果。途中で落ちたときにどこまで書き込まれているかは、業務日で確認する。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 25)
+    )
     make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -848,7 +665,7 @@ def test_run_resumes_from_last_csv_date_after_crash(
     # 1回目: 5ファイル目でクラッシュ
     with pytest.raises(RuntimeError):
         with patch("src.diff.read_records", side_effect=_fail_on_fifth):
-            run(datetime.date(2026, 4, 25))
+            run()
 
     csv_path = output_folder / OUTPUT_NAME
     assert csv_path.exists()
@@ -864,7 +681,7 @@ def test_run_resumes_from_last_csv_date_after_crash(
     first_4_20 = _cell(first_rows, "2026-04", "標準", "積み上げ", "2026-04-20")
 
     # 2回目: そのまま再開（モック解除）
-    run(datetime.date(2026, 4, 25))
+    run()
 
     with CSV(csv_path) as csv:
         second_rows = list(csv.read())
@@ -877,85 +694,6 @@ def test_run_resumes_from_last_csv_date_after_crash(
     assert second_4_20 == first_4_20
 
 
-def test_run_writes_conditions_file_on_first_save_even_if_run_crashes(
-    tmp_path: Path, make_book, setup_run
-) -> None:
-    """1度目の保存の時点で条件ファイルを書いている（途中で落ちても次回が再開できる）。"""
-    input_folder, output_folder = setup_run(tmp_path)
-    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-
-    real_reader = __import__("src.diff", fromlist=["read_records"]).read_records
-    call_count = {"n": 0}
-
-    def _fail_on_fifth(path, *args, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 5:
-            raise RuntimeError("simulated crash")
-        return real_reader(path, *args, **kwargs)
-
-    conditions_path = output_folder / CONDITIONS_NAME
-    with pytest.raises(RuntimeError):
-        with patch("src.diff.read_records", side_effect=_fail_on_fifth):
-            run(datetime.date(2026, 4, 25))
-
-    # 条件ファイルが書かれている（=初回保存より後に落ちた）
-    assert conditions_path.exists()
-    assert "KINDS" in conditions_path.read_text(encoding="utf-8")
-
-
-def test_run_does_not_full_rebuild_when_conditions_change_crash_in_middle(
-    tmp_path: Path, make_book, config_for_tests, caplog
-) -> None:
-    """条件変更による作り直しの途中で落ちても、次回は作り直しにならず続きから再開する。"""
-    input_folder = tmp_path / "input"
-    output_folder = tmp_path / "output"
-    input_folder.mkdir()
-    output_folder.mkdir()
-    config_for_tests(_config_text(input_folder, output_folder))
-
-    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260423.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
-
-    # 条件を変えてからクラッシュさせる（作り直しの途中で落ちる）
-    config_for_tests(_config_text(input_folder, output_folder).replace(
-        "KINDS = [完了, 予定]", "KINDS = [完了]"
-    ))
-    real_reader = __import__("src.diff", fromlist=["read_records"]).read_records
-    call_count = {"n": 0}
-
-    def _fail_on_fifth(path, *args, **kwargs):
-        call_count["n"] += 1
-        if call_count["n"] == 5:
-            raise RuntimeError("simulated rebuild crash")
-        return real_reader(path, *args, **kwargs)
-
-    with pytest.raises(RuntimeError):
-        with patch("src.diff.read_records", side_effect=_fail_on_fifth):
-            run(datetime.date(2026, 4, 25))
-
-    csv_path = output_folder / OUTPUT_NAME
-    conditions_path = output_folder / CONDITIONS_NAME
-    assert csv_path.exists()
-    assert conditions_path.exists()
-
-    # 再実行：条件は変えず、増分計算として動く。
-    # 「実行モード: 増分」が出ること（＝全期間を作り直していない）で確認する。
-    caplog.clear()
-    with caplog.at_level(logging.INFO):
-        run(datetime.date(2026, 4, 25))
-
-    mode_logs = [r.message for r in caplog.records if r.message.startswith("実行モード:")]
-    assert mode_logs == ["実行モード: 増分"]
-
-
 def test_run_offsets_column_by_one_business_day(
     tmp_path: Path, make_book, setup_run
 ) -> None:
@@ -964,7 +702,9 @@ def test_run_offsets_column_by_one_business_day(
     ファイル名は 8/24 と 8/25 だが、列は **業務日** の 8/24 (= 8/25 - 1日) に記録される。
     8/25 の列に書かれると勘違いしやすいので日付で固定する。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 8, 26)
+    )
     # 8/24 ファイルの比較相手として 2025/12/20 を置く（範囲外だが例外的に開かれる）
     make_book(input_folder / "一覧_20251220.xlsx", [["id_a", "2026-08-24", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260824.xlsx", [["id_a", "2026-08-24", "標準A", "完了"]])
@@ -976,7 +716,7 @@ def test_run_offsets_column_by_one_business_day(
         ],
     )
 
-    run(datetime.date(2026, 8, 26))
+    run()
 
     csv_path = output_folder / OUTPUT_NAME
     with CSV(csv_path) as csv:
@@ -1000,13 +740,15 @@ def test_run_advances_one_file_in_incremental_run(
     ファイル日付 8/25 から作り直さず、ファイル日付 8/26 以降だけ読むことを
     実際にファイルを読んで確認する（off-by-one 防止）。
     """
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 8, 26)
+    )
     # 8/23 ファイルの比較相手として 2025/12/20 を置く
     make_book(input_folder / "一覧_20251220.xlsx", [["id_a", "2026-08-23", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260823.xlsx", [["id_a", "2026-08-23", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260824.xlsx", [["id_a", "2026-08-23", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260825.xlsx", [["id_a", "2026-08-23", "標準A", "完了"]])
-    run(datetime.date(2026, 8, 26))
+    run()
     with CSV(output_folder / OUTPUT_NAME) as csv:
         first_rows = list(csv.read())
     last_date_header = max(
@@ -1024,7 +766,7 @@ def test_run_advances_one_file_in_incremental_run(
         return {}
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 8, 26))
+        run()
 
     opened_names = [p.name for p in opened]
     # 業務日 8/24 の列があるので、業務日 8/25 の列はファイル日付 8/26 から始める
@@ -1038,7 +780,9 @@ def test_run_columns_span_month_boundary(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     """月をまたいでも業務日列が連続する（8/29・8/30・8/31・9/1 が並ぶ）。"""
-    input_folder, output_folder = setup_run(tmp_path)
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 9, 2)
+    )
     # 8/28 ファイルの比較相手として 2025/12/20 を置く（範囲外だが例外的に開かれる）
     make_book(input_folder / "一覧_20251220.xlsx", [["id_a", "2026-08-28", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260828.xlsx", [["id_a", "2026-08-28", "標準A", "完了"]])
@@ -1047,7 +791,7 @@ def test_run_columns_span_month_boundary(
     make_book(input_folder / "一覧_20260831.xlsx", [["id_a", "2026-08-28", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260901.xlsx", [["id_a", "2026-08-28", "標準A", "完了"]])
 
-    run(datetime.date(2026, 9, 2))
+    run()
 
     csv_path = output_folder / OUTPUT_NAME
     with CSV(csv_path) as csv:

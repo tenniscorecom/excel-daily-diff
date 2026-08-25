@@ -19,6 +19,12 @@ from comken.exceptions import (
 )
 from comken.toolbox.excel import Excel
 
+
+# 進捗ログ用の ``(現在, 全体)`` の組。素の ``(int, int)`` タプルより名前付きで読みやすい
+class Progress(NamedTuple):
+    current: int
+    total: int
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +55,7 @@ def read_records(
     plan_prefixes: tuple[str, ...],
     kinds: tuple[str, ...],
     rules: tuple[ColumnRule, ...],
-    progress: tuple[int, int] | None = None,
+    progress: Progress | None = None,
 ) -> dict[str, Record]:
     """1ファイルを読み、条件を満たす行を 顧客番号 をキーにした辞書で返す。
 
@@ -57,13 +63,14 @@ def read_records(
     振り分けるため、呼び出し側で対象月を見て分ける）。
     ``progress`` を渡すと、ログに進捗 ``(n/total)`` を前置する。
     """
-    # 設定は起動時に決まる値で、行ごとに変わらない。ループの外で1回だけ読む。
-    sheet_names = _source_sheet_names()
-    header_row = _source_header_row()
-    key_column = _source_key_column()
-    date_column = _source_date_column()
-    plan_column = _source_plan_column()
-    kind_column = _source_kind_column()
+    # 設定は起動時に決まる値で、行ごとに変わらない。ループの外で1回だけ読む
+    raw_sheet_name = config.SOURCE.SHEET_NAME
+    sheet_name = raw_sheet_name if isinstance(raw_sheet_name, str) else raw_sheet_name[0]
+    header_row = int(config.SOURCE.HEADER_ROW)
+    key_column = config.SOURCE.KEY_COLUMN
+    date_column = config.SOURCE.DATE_COLUMN
+    plan_column = config.SOURCE.PLAN_COLUMN
+    kind_column = config.SOURCE.KIND_COLUMN
     required_columns = (key_column, date_column, plan_column, kind_column)
 
     records: dict[str, Record] = {}
@@ -71,8 +78,9 @@ def read_records(
     broken_dates = 0
     row_count = 0
     with Excel(path, read_only=True) as excel:
-        sheet_name = excel.find_sheet(*sheet_names)
-        rows = _read_dict_rows(excel, sheet_name, rules, header_row, required_columns)
+        rows = _read_dict_rows(
+            excel, sheet_name, rules, header_row, required_columns
+        )
         for row in rows:
             row_count += 1
             customer_id = _customer_id(row.get(key_column))
@@ -115,22 +123,17 @@ def read_records(
             date_column,
             broken_dates,
         )
+    progress_prefix = (
+        f"({progress[0]}/{progress[1]}) " if progress is not None else ""
+    )
     logger.info(
         "%s%s[%s]: 条件に合う行 %d 件",
-        _progress_prefix(progress),
+        progress_prefix,
         path.name,
         sheet_name,
         len(records),
     )
     return records
-
-
-def _progress_prefix(progress: tuple[int, int] | None) -> str:
-    """``read_records`` のログに進捗 ``"(3/42) "`` を前置する。``None`` なら空文字。"""
-    if progress is None:
-        return ""
-    current, total = progress
-    return f"({current}/{total}) "
 
 
 def load_rules() -> tuple[ColumnRule, ...]:
@@ -140,64 +143,32 @@ def load_rules() -> tuple[ColumnRule, ...]:
     セクションが無ければ空タプルを返す。
     """
     rules: list[ColumnRule] = []
-    rules += _rules_in("INCLUDE_CONTAINS", is_contains=True, is_exclude=False)
-    rules += _rules_in("EXCLUDE_CONTAINS", is_contains=True, is_exclude=True)
-    rules += _rules_in("INCLUDE_EXACT", is_contains=False, is_exclude=False)
-    rules += _rules_in("EXCLUDE_EXACT", is_contains=False, is_exclude=True)
-    return tuple(rules)
-
-
-def _rules_in(section: str, is_contains: bool, is_exclude: bool) -> list[ColumnRule]:
-    try:
-        values = vars(getattr(config, section))
-    except ConfigSectionNotFoundError:
-        return []
-    rules = []
-    for column, value in values.items():
-        if column.startswith("_"):
+    for section, is_contains, is_exclude in (
+        ("INCLUDE_CONTAINS", True, False),
+        ("EXCLUDE_CONTAINS", True, True),
+        ("INCLUDE_EXACT", False, False),
+        ("EXCLUDE_EXACT", False, True),
+    ):
+        try:
+            values = vars(getattr(config, section))
+        except ConfigSectionNotFoundError:
             continue
-        words = _to_words(value)
-        if words:
-            rules.append(ColumnRule(column, words, is_contains, is_exclude))
-    return rules
-
-
-def _to_words(value: object) -> tuple[str, ...]:
-    items = value if isinstance(value, list) else str(value).split(",")
-    return tuple(str(item).strip() for item in items if str(item).strip())
-
-
-def _source_sheet_names() -> tuple[str, ...]:
-    """``[SOURCE] SHEET_NAME`` の候補一覧を config に書いた順に返す。
-
-    ``SHEET_NAME = Sheet1`` のように1つだけ書いた古い形式もそのまま動くように、
-    文字列で書かれた場合は1要素のタプルに変換する。
-    ``[a, b]`` のようにリストで書いた場合は順序を保ったまま要素を返す。
-    """
-    value = config.SOURCE.SHEET_NAME
-    if isinstance(value, list):
-        return tuple(str(item).strip() for item in value if str(item).strip())
-    return (str(value).strip(),)
-
-
-def _source_header_row() -> int:
-    return int(config.SOURCE.HEADER_ROW)
-
-
-def _source_key_column() -> str:
-    return str(config.SOURCE.KEY_COLUMN)
-
-
-def _source_date_column() -> str:
-    return str(config.SOURCE.DATE_COLUMN)
-
-
-def _source_plan_column() -> str:
-    return str(config.SOURCE.PLAN_COLUMN)
-
-
-def _source_kind_column() -> str:
-    return str(config.SOURCE.KIND_COLUMN)
+        for column, value in values.items():
+            if column.startswith("_"):
+                continue
+            if isinstance(value, list):
+                words = tuple(
+                    str(item).strip() for item in value if str(item).strip()
+                )
+            else:
+                words = tuple(
+                    word.strip()
+                    for word in str(value).split(",")
+                    if word.strip()
+                )
+            if words:
+                rules.append(ColumnRule(column, words, is_contains, is_exclude))
+    return tuple(rules)
 
 
 def _read_dict_rows(
@@ -211,16 +182,23 @@ def _read_dict_rows(
 
     Excel の見出しには「備考 」のように空白が紛れ込むことがあるため、
     読み込み側で見出しの前後の空白を落とす（config.ini 側はキー名の空白が落ちる）。
-    ``sheet_name`` は ``_select_sheet_name`` で確定済みのものを使う（候補の上から
-    試して見つかったもの）。``header_row`` と ``required_columns`` は
-    ``read_records`` がループの外で1回だけ読んで渡したもの（行ごとに変わらない）。
+    ``header_row`` と ``required_columns`` は ``read_records`` がループの外で
+    1回だけ読んで渡したもの（行ごとに変わらない）。
     """
     raw_rows = excel.read_computed_rows_as_dicts(sheet_name, header_row=header_row)
     if not raw_rows:
         return []
     original_keys = list(raw_rows[0].keys())
     stripped_keys = [_text(key) for key in original_keys]
-    _validate_columns(stripped_keys, rules, required_columns)
+    # 必要な列（基本4列 + あとから足した絞り込みの列）が見出しに揃っているか
+    # 確かめる。打ち間違えたまま「1件も該当しない」「1件も除外されない」と
+    # 静かに間違うのを防ぐ。
+    required = [*required_columns, *(rule.column for rule in rules)]
+    missing = [
+        column for column in dict.fromkeys(required) if column not in stripped_keys
+    ]
+    if missing:
+        raise ExcelColumnNotFoundError(missing)
     rows: list[dict[str, Any]] = []
     for raw_row in raw_rows:
         if all(value is None for value in raw_row.values()):
@@ -229,39 +207,19 @@ def _read_dict_rows(
     return rows
 
 
-def _validate_columns(
-    headers: list[str],
-    rules: tuple[ColumnRule, ...],
-    required_columns: tuple[str, ...],
-) -> None:
-    """必要な列が見出しに揃っているか確かめる。
-
-    あとから足した絞り込みの列も見る。列名を打ち間違えたまま「1件も該当しない」
-    「1件も除外されない」と静かに間違うのを防ぐ。
-    ``required_columns`` は ``read_records`` がループの外で読んだものをそのまま渡す。
-    """
-    required = [*required_columns, *(rule.column for rule in rules)]
-    missing = [column for column in dict.fromkeys(required) if column not in headers]
-    if missing:
-        raise ExcelColumnNotFoundError(missing)
-
-
 def _matches_rules(row: dict, rules: tuple[ColumnRule, ...]) -> bool:
     """あとから足した条件をすべて満たすか判定する。"""
     for rule in rules:
         text = _text(row.get(rule.column))
-        if not _matches_rule(text, rule):
+        if rule.is_contains:
+            is_hit = any(word in text for word in rule.words)
+        else:
+            is_hit = text in rule.words
+        if rule.is_exclude:
+            is_hit = not is_hit
+        if not is_hit:
             return False
     return True
-
-
-def _matches_rule(text: str, rule: ColumnRule) -> bool:
-    """あとから足した条件1つを満たすか判定する。"""
-    if rule.is_contains:
-        is_hit = any(word in text for word in rule.words)
-    else:
-        is_hit = text in rule.words
-    return not is_hit if rule.is_exclude else is_hit
 
 
 def _plan_prefix(value: object, prefixes: tuple[str, ...]) -> str:

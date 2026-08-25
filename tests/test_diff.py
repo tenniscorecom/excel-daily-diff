@@ -10,15 +10,9 @@ def _record(customer_id: str, day: int = 1) -> Record:
     return Record(customer_id, datetime.date(2026, 4, day), "標準")
 
 
-def _target_months_for(business_date: datetime.date) -> list[tuple[int, int]]:
-    """テスト用の対象月決定。業務日が 23日以降なら翌月も含む（実コードと同じ規約）。"""
-    months = [(business_date.year, business_date.month)]
-    if business_date.day >= 23:
-        if business_date.month == 12:
-            months.append((business_date.year + 1, 1))
-        else:
-            months.append((business_date.year, business_date.month + 1))
-    return months
+def _target_months_for(business_date: datetime.date) -> list[str]:
+    """テスト用の対象月決定。業務日 = その月の単一対象月（文字列）。"""
+    return [f"{business_date.year:04d}-{business_date.month:02d}"]
 
 
 def test_compute_counts_compares_adjacent_files_and_reads_each_once() -> None:
@@ -33,8 +27,8 @@ def test_compute_counts_compares_adjacent_files_and_reads_each_once() -> None:
     with patch("src.diff.read_records", side_effect=records) as reader:
         counts = compute_counts(dated_files, _target_months_for, ("標準",), ("完了",), ())
 
-    added = counts.by_row[((2026, 4), "標準", STATUS_ADDED)]
-    postponed = counts.by_row[((2026, 4), "標準", STATUS_POSTPONED)]
+    added = counts.by_row[("2026-04", "標準", STATUS_ADDED)]
+    postponed = counts.by_row[("2026-04", "標準", STATUS_POSTPONED)]
     # 業務日 = ファイル日付 - 1日。
     # 一覧_20260421.xlsx(業務日 4/20) vs 一覧_20260420.xlsx(業務日 4/19):
     #   c は 4/20 にのみ存在 → 業務日 4/20 に積み上げ 1
@@ -51,8 +45,9 @@ def test_compute_counts_compares_adjacent_files_and_reads_each_once() -> None:
 
 
 def test_compute_counts_only_buckets_into_target_months() -> None:
+    """業務日の対象月だけがバケットされる。4/30 → 4月のみ、5/1 → 5月のみ。"""
     paths = [Path(f"一覧_20260{day}.xlsx") for day in (430, 501, 502)]
-    # 4/30: 4月のレコードのみ、5/1: 4月と5月のレコードが混在、5/2: 5月のレコードのみ
+    # 4/30: 4月のレコード、5/1: 4月と5月のレコードが混在、5/2: 5月のレコード
     records = [
         {
             "apr": Record("apr", datetime.date(2026, 4, 30), "標準"),
@@ -76,19 +71,16 @@ def test_compute_counts_only_buckets_into_target_months() -> None:
             dated_files, _target_months_for, ("標準",), ("完了",), ()
         )
 
-    # 業務日 4/30 (5/1 ファイル vs 4/30 ファイル):
-    # 4/30 は day 30 >= 23 なので対象月は 4月 と 5月
-    #   4月: apr が両方にいる → 差分なし
-    #   5月: may が current にのみ存在 → 5月 積み上げ 1
-    assert counts.by_row[((2026, 5), "標準", STATUS_ADDED)][datetime.date(2026, 4, 30)] == 1
-    # 業務日 5/1 (5/2 ファイル vs 5/1 ファイル):
-    # 5/1 は day 1 < 23 なので対象月は 5月のみ
-    #   5月: may が両方にいる → 差分なし
-    assert ((2026, 4), "標準", STATUS_ADDED) not in counts.by_row
-    assert ((2026, 4), "標準", STATUS_POSTPONED) not in counts.by_row
-    assert ((2026, 5), "標準", STATUS_ADDED) not in counts.by_row.get(
-        ((2026, 5), "標準", STATUS_ADDED), {}
-    ) or datetime.date(2026, 5, 1) not in counts.by_row[((2026, 5), "標準", STATUS_ADDED)]
+    # 業務日 4/29 (4/30 ファイル vs previous=無) → 比較なし
+    # 業務日 4/30 (5/1 ファイル vs 4/30 ファイル) → 対象月は 4月のみ
+    #   4月: apr が両方 → 差分なし
+    #   5月: 4/30 ファイル側に 5月のレコードが無いので、5月のバケットは無い
+    assert ("2026-04", "標準", STATUS_ADDED) not in counts.by_row
+    assert ("2026-04", "標準", STATUS_POSTPONED) not in counts.by_row
+    # 業務日 5/1 (5/2 ファイル vs 5/1 ファイル) → 対象月は 5月のみ
+    #   5月: may が両方 → 差分なし
+    assert ("2026-05", "標準", STATUS_ADDED) not in counts.by_row
+    assert ("2026-05", "標準", STATUS_POSTPONED) not in counts.by_row
 
 
 def test_compute_counts_groups_by_plan_prefix() -> None:
@@ -114,30 +106,39 @@ def test_compute_counts_groups_by_plan_prefix() -> None:
 
     # 一覧_20260421.xlsx(業務日 4/20) vs 一覧_20260422.xlsx(業務日 4/21):
     # b が消えた → 業務日 4/21 に 上位 の延期 1
-    assert counts.by_row[((2026, 4), "上位", STATUS_POSTPONED)][datetime.date(2026, 4, 21)] == 1
-    assert ((2026, 4), "標準", STATUS_ADDED) not in counts.by_row
+    assert counts.by_row[("2026-04", "上位", STATUS_POSTPONED)][datetime.date(2026, 4, 21)] == 1
+    assert ("2026-04", "標準", STATUS_ADDED) not in counts.by_row
 
 
 def test_compute_counts_uses_business_date_target_months_across_month_boundary() -> None:
-    """月をまたぐ業務日（4/30 → 5/1）で、両方の業務日の対象月が和集合でバケットされる。
+    """月をまたぐ業務日（4/30 → 5/1）で、各業務日の対象月が変わる。
 
-    業務日 4/30 → 4月対象、業務日 5/1 → 5月対象。一覧_20260501.xlsx は両方の
-    突き合わせで previous/current になるので、4月と5月の両方でバケットされる。
+    業務日 4/29 → 4月、業務日 4/30 → 4月、業務日 5/1 → 5月。
+    一覧_20260501.xlsx は 4月対象と 5月対象の両方でバケットされる。
     """
-    paths = [Path("一覧_20260430.xlsx"), Path("一覧_20260501.xlsx")]
+    paths = [
+        Path("一覧_20260430.xlsx"),
+        Path("一覧_20260501.xlsx"),
+        Path("一覧_20260502.xlsx"),
+    ]
     records = [
         {
             # 4月のレコード
             "apr": Record("apr", datetime.date(2026, 4, 30), "標準"),
         },
         {
-            # 5月のレコード
+            # 4月のレコード（apr は引き続き残存）
+            "apr": Record("apr", datetime.date(2026, 4, 30), "標準"),
+        },
+        {
+            # 5月のレコード（may は 5月 bucket で新規に登場）
             "may": Record("may", datetime.date(2026, 5, 10), "標準"),
         },
     ]
     dated_files = [
         (datetime.date(2026, 4, 30), paths[0]),  # → 業務日 4/29
-        (datetime.date(2026, 5, 1), paths[1]),   # → 業務日 4/30（前）と 5/1（後）
+        (datetime.date(2026, 5, 1), paths[1]),   # → 業務日 4/30
+        (datetime.date(2026, 5, 2), paths[2]),   # → 業務日 5/1
     ]
 
     with patch("src.diff.read_records", side_effect=records):
@@ -145,15 +146,15 @@ def test_compute_counts_uses_business_date_target_months_across_month_boundary()
             dated_files, _target_months_for, ("標準",), ("完了",), ()
         )
 
-    # 業務日 4/29 (4/30 ファイル vs previous=4/30以前のprevious無し)
-    # → 1回目なので previous_by_month が None、比較は走らない
-    # 業務日 4/30 (5/1 ファイル vs 4/30 ファイル) → previous=apr、current=may
-    # 4月対象では apr が current にない → 4月 延期 1
-    assert counts.by_row[((2026, 4), "標準", STATUS_POSTPONED)][datetime.date(2026, 4, 30)] == 1
-    # 5月対象では may が current にある、previous にも 4/30ファイルを5月でもバケット
-    # していれば両方にあるが、4/30 ファイルには 5月のレコードが無い
-    # → current の 5月に may のみ → 5月 積み上げ 1
-    assert counts.by_row[((2026, 5), "標準", STATUS_ADDED)][datetime.date(2026, 4, 30)] == 1
+    # 業務日 4/29 (4/30 ファイル vs previous=無し) → 比較なし
+    # 業務日 4/30 (5/1 ファイル vs 4/30 ファイル) → 対象月 4月
+    #   apr が両方 → 差分なし
+    assert ("2026-04", "標準", STATUS_POSTPONED) not in counts.by_row
+    assert ("2026-04", "標準", STATUS_ADDED) not in counts.by_row
+    # 業務日 5/1 (5/2 ファイル vs 5/1 ファイル) → 対象月 5月
+    #   previous_by_month["2026-05"] は 5/1 ファイル側の 5月 bucket。
+    #   5/1 ファイルには 5月レコードが無いので空、current には may → 積み上げ 1
+    assert counts.by_row[("2026-05", "標準", STATUS_ADDED)][datetime.date(2026, 5, 1)] == 1
 
 
 def test_compute_counts_reads_each_file_only_once_across_month_boundary() -> None:
