@@ -185,7 +185,7 @@ def _read_dict_rows(
     ``header_row`` と ``required_columns`` は ``read_records`` がループの外で
     1回だけ読んで渡したもの（行ごとに変わらない）。
     """
-    raw_rows = excel.read_computed_rows_as_dicts(sheet_name, header_row=header_row)
+    raw_rows = excel.read(sheet_name, header_row=header_row).read_rows()
     if not raw_rows:
         return []
     original_keys = list(raw_rows[0].keys())
