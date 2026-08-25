@@ -18,11 +18,13 @@ src/run.py — 処理の本体
 """
 
 import datetime
+import functools
 import logging
 from pathlib import Path
 
 from comken import config
 from comken.core import DateFileFinder, date_in_name, today
+from comken.core.clock import month_end
 
 from src.diff import ByRow, DaySavedCallback, compute_counts
 from src.report import COL_TARGET_MONTH, last_date_in_csv, read_existing, write_csv
@@ -45,6 +47,10 @@ def run() -> Path:
     output_folder = config.REPORT.OUTPUT_FOLDER
     output_path = output_folder / OUTPUT_NAME
 
+    # ローリングモード判定（[FILES] ROLLING_WINDOW_DAYS）。キーが無い／読み取れない
+    # 場合は None（=年次累積モード。既存挙動と完全同一）。
+    rolling_window_days = _resolve_rolling_window_days()
+
     dated_files = _all_dated_files(input_folder)
     if not dated_files:
         logger.warning("入力フォルダに対象ファイルがありません: %s", input_folder)
@@ -52,9 +58,9 @@ def run() -> Path:
 
     existing = read_existing(output_path)
 
-    # 下限：実行日の年の1月1日（業務日）。それより古いファイルは対象外
-    # （古いファイルはシート構造が違うことがある）
-    range_floor = _range_floor(today_date)
+    # 下限：年次累積モードは実行日の年の1月1日（業務日）、ローリングモードは
+    # 「今日 - (N-1)日」。ローリングモードでは古いファイルはそもそも対象外。
+    range_floor = _range_floor(today_date, rolling_window_days)
     # 上限：実行日（業務日）。今日より後の日付のファイルは対象外
     range_ceiling = today_date
 
@@ -95,7 +101,9 @@ def run() -> Path:
     # 業務日基準の対象月。読み込み範囲全体で登場する対象月の和集合を取る。
     # 実行日基準の単一グループではないので、開始ログは「範囲内で出現しうる対象月」
     # の全体を出す（業務日ごとのログにはその日に使った対象月が出る）。
-    target_months_in_range = _target_months_in_range(start_date, end_date)
+    target_months_in_range = _target_months_in_range(
+        start_date, end_date, rolling_window_days=rolling_window_days
+    )
 
     # 実行開始時の概要ログ。処理の進行に合わせて直書きする（途中でどこまで
     # 進んでいたかがログから追えるように）。
@@ -128,9 +136,13 @@ def run() -> Path:
 
     # 書き出す行の (対象月, 種別) の組を呼び出し側で組み立てて渡す。
     # 読み込み範囲全体で対象月になる月の行を必ず作り、既存 CSV にある対象月も
-    # 残す（古い対象月の行を消さない）。
+    # 残す（古い対象月の行を消さない）。ローリングモードでは「直近 N 日分の窓に
+    # 登場した月だけ」にする（窓の外に出た古い対象月の行は捨てる）。
     existing_months = _months_from_existing(existing)
-    months_for_rows = sorted(set(target_months_in_range) | existing_months)
+    if rolling_window_days is None:
+        months_for_rows = sorted(set(target_months_in_range) | existing_months)
+    else:
+        months_for_rows = list(target_months_in_range)
     row_keys = [(month, plan) for month in months_for_rows for plan in plan_prefixes]
 
     save_callback, save_sizes = _make_day_saver(
@@ -138,6 +150,8 @@ def run() -> Path:
         start_date=start_date,
         existing_dates=existing_dates,
         row_keys=row_keys,
+        window_floor=range_floor if rolling_window_days is not None else None,
+        keep_leftover_rows=rolling_window_days is None,
     )
     # 1日ぶん終わるたびに CSV を途中保存することを最初に1回だけ伝える。
     # 長い処理で「今どこまで保存されているのか」がログから追えるようにするための
@@ -146,7 +160,9 @@ def run() -> Path:
 
     counts = compute_counts(
         targets,
-        _target_months,
+        functools.partial(_target_months, rolling_window_days=rolling_window_days)
+        if rolling_window_days is not None
+        else _target_months,
         plan_prefixes,
         kinds,
         rules,
@@ -174,33 +190,112 @@ def run() -> Path:
     return output_path
 
 
-def _range_floor(today_date: datetime.date) -> datetime.date:
-    """読み込み範囲の下限。実行日の年の1月1日（業務日）。
+def _range_floor(
+    today_date: datetime.date,
+    rolling_window_days: int | None = None,
+) -> datetime.date:
+    """読み込み範囲の下限（業務日）。
 
-    1月実行時でも同年の1月1日（前年の12月1日にはしない）。
-    古いファイルはシート構造が違うことが多いため、範囲外との比較相手に
-    使う1ファイルを除いて、今年ぶんだけを読む。
+    引数:
+        ``rolling_window_days``: ``None``（既定）のときは実行日の年の1月1日を返す
+        （年次累積モード。1月実行時でも同年の1月1日。前年の12月1日にはしない）。
+        整数を渡したとき（ローリングモード）は **今日を含めて N 日ぶん**の
+        暦日になるよう、今日 - (N - 1) 日 を返す。N=1 なら今日だけ、N=7 なら
+        今日から6日前まで。
+
+    年次累積モードでは古いファイルはシート構造が違うことが多いため、範囲外との
+    比較相手に使う1ファイルを除いて、今年ぶんだけを読む運用が前提。
+    ローリングモードでは日々サッと確認する用途のため、窓の幅を「直近 N 日」に
+    限定する（1年ぶん全部を読み直す必要が無い）。
     """
-    return datetime.date(today_date.year, 1, 1)
+    if rolling_window_days is None:
+        return datetime.date(today_date.year, 1, 1)
+    return today_date - datetime.timedelta(days=rolling_window_days - 1)
 
 
-def _target_months(business_date: datetime.date) -> list[str]:
-    """業務日から対象月を決める。業務日 = その業務日の属する月の ``"YYYY-MM"`` を返す。"""
-    return [f"{business_date.year:04d}-{business_date.month:02d}"]
+def _resolve_rolling_window_days() -> int | None:
+    """``config.FILES.ROLLING_WINDOW_DAYS`` を安全に読む。キーが無ければ ``None``。
+
+    comken の ``_SectionNamespace.__getattr__`` は未定義キーで
+    ``ConfigKeyNotFoundError``（``AttributeError`` のサブクラス）を投げるため、
+    ``hasattr`` で存在判定する。``_parse_value`` が整数を ``int`` に変換するので、
+    設定されていれば ``int`` が返る（``True`` / ``False``/リスト/Path 等ではない）。
+    """
+    if not hasattr(config.FILES, "ROLLING_WINDOW_DAYS"):
+        return None
+    value = config.FILES.ROLLING_WINDOW_DAYS
+    if isinstance(value, bool):
+        # ``True`` / ``False`` も ``int`` のサブクラスで ``isinstance(x, int)`` が
+        # True になる。``ROLLING_WINDOW_DAYS`` を真偽値として書かれたケースは
+        # 設定ミスなので、誤って巨大な数値として扱わないよう明示的に拒否する
+        raise TypeError(
+            "ROLLING_WINDOW_DAYS には整数を指定してください"
+            f"（bool は不可）: {value!r}"
+        )
+    if not isinstance(value, int):
+        raise TypeError(
+            "ROLLING_WINDOW_DAYS には整数を指定してください"
+            f"（現在: {type(value).__name__}）"
+        )
+    if value < 1:
+        raise ValueError(
+            f"ROLLING_WINDOW_DAYS には 1 以上の整数を指定してください（現在: {value}）"
+        )
+    return value
+
+
+def _target_months(
+    business_date: datetime.date,
+    *,
+    rolling_window_days: int | None = None,
+) -> list[str]:
+    """業務日から対象月を決める。
+
+    既定（``rolling_window_days=None``）は業務日の属する月だけを返す（既存の
+    年次累積モードの挙動、完全不変）。``rolling_window_days`` を渡したとき
+    （ローリングモード）は、業務日が月末まで ``rolling_window_days`` 日**未満**
+    のときだけ翌月も加える。ちょうど ``rolling_window_days`` 日残っている
+    業務日（= 残日数 = ``rolling_window_days``）は **翌月を含めない**——
+    「月末 N 日前〜月末」の **N 日ぶん**だけが lookahead の対象になる。
+    閾値は ``_range_floor`` の「直近 N 日ぶんの窓」と同じ値を使い、
+    ``ROLLING_WINDOW_DAYS = 7`` なら「月末7日前〜月末」の7日間で翌月も拾う。
+
+    月末が 12 月のときは翌月が翌年 1 月になるので、ラベル計算は年跨ぎも
+    正しく扱う（``month_end`` は純粋な暦計算で祝日に依存しない）。
+    """
+    months = [f"{business_date.year:04d}-{business_date.month:02d}"]
+    if rolling_window_days is not None:
+        days_to_end = (month_end(business_date) - business_date).days
+        if days_to_end < rolling_window_days:
+            if business_date.month == 12:
+                next_year = business_date.year + 1
+                next_month = 1
+            else:
+                next_year = business_date.year
+                next_month = business_date.month + 1
+            months.append(f"{next_year:04d}-{next_month:02d}")
+    return months
 
 
 def _target_months_in_range(
-    start: datetime.date, end: datetime.date
+    start: datetime.date,
+    end: datetime.date,
+    *,
+    rolling_window_days: int | None = None,
 ) -> list[str]:
     """``start`` から ``end`` までの各業務日について対象月を求め、和集合を返す。
 
     業務日ごとに ``_target_months`` を呼ぶので、月をまたぐ境界があれば
     自動的に複数の対象月が並ぶ。順序は年月昇順。
+    ローリングモードでは ``_target_months`` 側にキーワード引数を渡して、
+    月末近くの業務日では翌月も拾う（``_target_months`` の docstring 参照）。
     """
     months: set[str] = set()
     current = start
     while current <= end:
-        months.update(_target_months(current))
+        months.update(
+            _target_months(current, rolling_window_days=rolling_window_days)
+        )
         current += datetime.timedelta(days=1)
     return sorted(months)
 
@@ -288,6 +383,8 @@ def _make_day_saver(
     start_date: datetime.date,
     existing_dates: list[datetime.date],
     row_keys: list[tuple[str, str]],
+    window_floor: datetime.date | None = None,
+    keep_leftover_rows: bool = True,
 ) -> tuple[DaySavedCallback, list[tuple[int, int]]]:
     """``compute_counts`` の ``on_day_done`` フックを組み立てる。
 
@@ -299,6 +396,12 @@ def _make_day_saver(
     列として出てしまい、``last_date_in_csv`` が本来の位置より先を指してしまう
     （= 再開時に未処理の日を飛ばしてしまう）。そこで、毎回 ``start_date`` から
     「この保存までに比較した最新の日」までの range だけを列にする。
+
+    ローリングモードでは「直近 N 日の窓」があり、``window_floor`` が指定された
+    ときは ``existing_dates`` のうち窓の外にある日付を捨ててから range と合併する
+    （= 窓の外に出た古い列を毎回保存で消す）。``keep_leftover_rows`` は
+    ``write_csv`` へのフラグで、``row_keys`` に無い既存行を保持するかを制御する。
+    年次累積モード（既定）は両方とも ``None`` / ``True`` で、既存挙動と完全同一。
 
     戻り値は ``(保存コールバック, これまでの保存サイズのリスト)``。``save_sizes``
     には ``write_csv`` が返した ``(行数, 列数)`` が毎回追加される。``run.py``
@@ -316,10 +419,17 @@ def _make_day_saver(
     ) -> None:
         last_compared = max(compared_dates)  # 1日ぶん終わった直後なので必ず空でない
         range_dates = _date_range(start_date, last_compared)
+        # ローリングモードでは窓の外の日付は捨てる
+        base_existing = (
+            [d for d in existing_dates if window_floor is None or d >= window_floor]
+        )
         # この保存時点で既に比較済みの日だけ ``True`` にする。比較済みの日は
         # 「ファイルはあったが件数が0」を ``"0"`` で表す対象になる。
-        all_dates = sorted(set(range_dates) | set(existing_dates))
+        all_dates = sorted(set(range_dates) | set(base_existing))
         dates = [(d, d in compared_dates) for d in all_dates]
-        sizes.append(write_csv(output_path, by_row, dates, row_keys, target_dates_by_month))
+        sizes.append(write_csv(
+            output_path, by_row, dates, row_keys, target_dates_by_month,
+            keep_leftover_rows=keep_leftover_rows,
+        ))
 
     return _save, sizes

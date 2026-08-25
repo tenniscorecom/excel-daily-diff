@@ -33,6 +33,7 @@ def write_csv(
     dates: list[tuple[datetime.date, bool]],
     row_keys: list[tuple[str, str]],
     target_dates_by_month: dict[str, set[datetime.date]] | None = None,
+    keep_leftover_rows: bool = True,
 ) -> tuple[int, int]:
     """集計 CSV を1本だけ書く。
 
@@ -47,6 +48,12 @@ def write_csv(
     ``target_dates_by_month`` は対象月ごとに「対象月だった業務日」の集合。
     業務日基準の対象月になったので、同じ行でも対象月でない業務日の列は
     空セルにする必要がある。
+
+    ``keep_leftover_rows`` は ``row_keys`` に現れない既存行（=古い対象月や、
+    今回の ``row_keys`` に含まれない組）をどう扱うかのフラグ。``True``
+    （既定、年次累積モード）は従来通りそのまま残す。``False``
+    （ローリングモード）は窓の外に出た対象月の行を捨てる。
+    報告側はローリングか否かを知らず、呼び出し側で判断してこの引数を渡す。
 
     戻り値は ``(書き出した行数, 列数)``。途中保存のたびに呼ばれるので、
     「出力しました」のログは呼び出し側で最後の1回に絞って出す（出力ファイル
@@ -95,8 +102,9 @@ def write_csv(
                 # 対象月になっていない → 既存セルの値は触らない（前回以前の run で
                 # 書き込まれた値も、空セルのまま残す）
             new_rows.append(row)
-    # 既存行で対象月に含まれないもの（古い対象月ぶん）はそのまま残す
-    leftover_rows = list(existing_by_key.values())
+    # 既存行で対象月に含まれないもの（古い対象月ぶん）はそのまま残す設計だが、
+    # ローリングモードでは窓の外に出た行を捨てる。フラグで呼び出し側が制御する。
+    leftover_rows = list(existing_by_key.values()) if keep_leftover_rows else []
 
     # ``CSV.replace`` は ``Table`` 経由で見出しと行の列集合が一致していないと
     # ``TableRowColumnsError`` を投げる。既存行は CSV にあった列のままで、
