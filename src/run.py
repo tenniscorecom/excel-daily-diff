@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 
 from comken import config
-from comken.core import DateFileFinder, date_in_name, month_start, today as _today
+from comken.core import DateFileFinder, date_in_name, today as _today
 
 from src.diff import compute_counts
 from src.report import last_date_in_csv, read_existing, write_csv
@@ -63,7 +63,7 @@ def run(today: datetime.date | None = None) -> Path:
         logger.info("[条件が変わりました] 過去ぶんは古い条件で数えられているため、全期間を作り直します")
         logger.info("--- 現在の条件 ---\n%s", current_conditions)
 
-    # 下限：実行日の前月の初日。それより古いファイルは対象外（古いファイルはシート構造が違うことがある）
+    # 下限：実行日の年の1月1日。それより古いファイルは対象外（古いファイルはシート構造が違うことがある）
     range_floor = _range_floor(today)
     # 上限：実行日。今日より後の日付のファイルは対象外
     range_ceiling = today
@@ -199,15 +199,14 @@ def _log_run_header(
 
 
 def _range_floor(today: datetime.date) -> datetime.date:
-    """読み込み対象の下限 = 実行日の前月の1日。
+    """読み込み対象の下限 = 実行日の年の1月1日。
 
-    入力フォルダに何年ぶん溜まっていても、この日より古いファイルは開かない
+    入力フォルダに何年ぶん溜まっていても、この年より古いファイルは開かない
     （古いファイルはシート構造が違うことがあるため）。
-    1月のときは前年12月に正しく戻る。
+    1月に実行したとき、前年12月のファイルは範囲外だが、比較相手として
+    直前1ファイルだけ例外的に読まれる。
     """
-    first_of_this_month = today.replace(day=1)
-    last_of_prev_month = first_of_this_month - datetime.timedelta(days=1)
-    return month_start(last_of_prev_month)
+    return datetime.date(today.year, 1, 1)
 
 
 def _build_dates(

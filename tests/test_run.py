@@ -66,7 +66,8 @@ def test_run_starts_from_oldest_file_when_no_csv_exists(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     input_folder, output_folder = setup_run(tmp_path)
-    # 4/20 の比較相手として 2/28 を置く（範囲外だが例外的に開かれる）
+    # 2/28 の比較相手として 2025/12/20 を置く（範囲外だが例外的に開かれる）
+    make_book(input_folder / "一覧_20251220.xlsx", [["stay", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["stay", "2026-04-10", "標準A", "完了"]])
     make_book(
         input_folder / "一覧_20260420.xlsx",
@@ -100,7 +101,8 @@ def test_run_writes_blank_for_days_without_files(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     input_folder, output_folder = setup_run(tmp_path)
-    # 4/20 の比較相手として 2/28 を置く
+    # 2/28 の比較相手として 2025/12/20 を置く
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -123,7 +125,8 @@ def test_run_continues_from_last_csv_date_and_keeps_existing_columns(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     input_folder, output_folder = setup_run(tmp_path)
-    # 1回目: 2/28（比較相手）, 4/20, 4/21 を実行
+    # 1回目: 2025/12/20（2/28 の比較相手）, 2/28, 4/20, 4/21 を実行
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -159,7 +162,8 @@ def test_run_rebuilds_full_period_when_conditions_change(
     output_folder.mkdir()
     config_for_tests(_config_text(input_folder, output_folder))
 
-    # 1回目: 全ファイルを実行（KINDS = [完了, 予定]）。2/28 は比較相手
+    # 1回目: 全ファイルを実行（KINDS = [完了, 予定]）。2025/12/20 は 2/28 の比較相手
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -185,7 +189,8 @@ def test_run_keeps_old_target_month_rows_with_empty_new_columns(
 ) -> None:
     """先月が対象月の行は、新しい日付列が空のまま残る。"""
     input_folder, output_folder = setup_run(tmp_path)
-    # 4月のとき 4月のみが対象。比較相手用に 2/28 を置く
+    # 4月のとき 4月のみが対象。比較相手用に 2025/12/20 と 2/28 を置く
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260421.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -228,7 +233,8 @@ def test_run_targets_two_months_from_the_23rd(
     tmp_path: Path, make_book, setup_run
 ) -> None:
     input_folder, output_folder = setup_run(tmp_path)
-    # 範囲内最初（4/10）の比較相手として 2/28 を置く（範囲外だが例外的に開かれる）
+    # 範囲内最初（2/28）の比較相手として 2025/12/20 を置く（範囲外だが例外的に開かれる）
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260410.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260418.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
@@ -258,27 +264,32 @@ def test_run_targets_two_months_from_the_23rd(
     assert "2026-05" in target_months
 
 
-def test_range_floor_returns_first_day_of_previous_month() -> None:
-    """今日が5月15日 → 前月の1日（4月1日）に切り上げる。"""
-    assert _range_floor(datetime.date(2026, 5, 15)) == datetime.date(2026, 4, 1)
+def test_range_floor_returns_first_day_of_current_year() -> None:
+    """今日がいつであっても、その年の1月1日（前月の1日ではない）。"""
+    assert _range_floor(datetime.date(2026, 5, 15)) == datetime.date(2026, 1, 1)
+    assert _range_floor(datetime.date(2026, 8, 25)) == datetime.date(2026, 1, 1)
 
 
-def test_range_floor_wraps_to_previous_year_in_january() -> None:
-    """1月実行時、前月の1日は前年12月1日に戻る。"""
-    assert _range_floor(datetime.date(2026, 1, 10)) == datetime.date(2025, 12, 1)
-    assert _range_floor(datetime.date(2026, 1, 1)) == datetime.date(2025, 12, 1)
+def test_range_floor_does_not_wrap_to_previous_year_in_january() -> None:
+    """1月実行時も、同じ年の1月1日（前年の12月1日ではない）。"""
+    assert _range_floor(datetime.date(2026, 1, 1)) == datetime.date(2026, 1, 1)
+    assert _range_floor(datetime.date(2026, 1, 5)) == datetime.date(2026, 1, 1)
+    assert _range_floor(datetime.date(2026, 1, 10)) == datetime.date(2026, 1, 1)
 
 
 def test_run_does_not_open_files_older_than_range_floor(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """前月の初日より古いファイルのうち、比較相手の直前1件だけは例外的に開かれる。"""
+    """今年の1月1日より古いファイルのうち、比較相手の直前1件だけは例外的に開かれる。
+
+    1月実行時、前年12月のファイルは範囲外だが、比較相手として最も新しい1件だけが読まれる。
+    """
     input_folder, output_folder = setup_run(tmp_path)
-    # 1月15日実行 → 下限は前年12月1日
-    # 11/30 は 12/01 の比較相手として開かれてよい
-    make_book(input_folder / "一覧_20251130.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
-    # 12/01 が範囲内最初 → 比較相手は 11/30（範囲外だが直前1件だけOK）
-    make_book(input_folder / "一覧_20251201.xlsx", [["a", "2026-01-05", "標準A", "完了"]])
+    # 1月15日実行 → 下限は今年の1月1日
+    # 前年12月のファイルのうち、最も新しい 12/20 が 1/10 の比較相手として開かれる
+    make_book(input_folder / "一覧_20251201.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251205.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-01-05", "標準A", "完了"]])
     # 範囲内
     make_book(input_folder / "一覧_20260110.xlsx", [["a", "2026-01-05", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260112.xlsx", [["a", "2026-01-05", "標準A", "完了"]])
@@ -294,26 +305,33 @@ def test_run_does_not_open_files_older_than_range_floor(
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
-    # 11/30 は比較相手として開かれる（仕様で許される）
-    assert "一覧_20251130.xlsx" in opened_names
-    # 下限当日の 12/01 は範囲内
-    assert "一覧_20251201.xlsx" in opened_names
-    # 範囲内ファイルも開かれる
+    # 1月に実行したとき、前年12月のファイルは比較相手として1件だけ読まれる
+    assert "一覧_20251220.xlsx" in opened_names
+    # 比較相手より更に古い前年のファイルは開かれない
+    assert "一覧_20251201.xlsx" not in opened_names
+    assert "一覧_20251205.xlsx" not in opened_names
+    # 範囲内のファイルも開かれる
     assert "一覧_20260110.xlsx" in opened_names
     assert "一覧_20260112.xlsx" in opened_names
+    # 比較相手 1 件 + 範囲内 2 件 = 3 件
+    assert len(opened) == 3
 
 
 def test_run_skips_files_older_than_the_predecessor(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """下限より古いファイルのうち、比較相手の直前1件より更に古いものは開かれない。"""
+    """下限より古いファイルのうち、比較相手の直前1件より更に古いものは開かれない。
+
+    1月実行時、前年12月のファイルが複数あっても、比較相手として読まれるのは最も新しい1件だけ。
+    """
     input_folder, output_folder = setup_run(tmp_path)
-    # 1月15日実行 → 下限は前年12月1日
-    # 比較相手の候補が 11/25, 11/28, 11/30 と3つあるが、開かれるのは 11/30 だけ
-    make_book(input_folder / "一覧_20251125.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20251128.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20251130.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20251201.xlsx", [["a", "2026-01-05", "標準A", "完了"]])
+    # 1月15日実行 → 下限は今年の1月1日
+    # 比較相手の候補が 12/15, 12/18, 12/20 と3つあるが、開かれるのは 12/20 だけ
+    make_book(input_folder / "一覧_20251215.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251218.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251220.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    # 範囲内
+    make_book(input_folder / "一覧_20260110.xlsx", [["a", "2026-01-05", "標準A", "完了"]])
 
     opened: list[Path] = []
 
@@ -326,30 +344,34 @@ def test_run_skips_files_older_than_the_predecessor(
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
-    # 11/25 と 11/28 は開かれない（比較相手の直前1件より更に古い）
-    assert "一覧_20251125.xlsx" not in opened_names
-    assert "一覧_20251128.xlsx" not in opened_names
-    # 直前の 11/30 だけが比較相手として開かれる
-    assert "一覧_20251130.xlsx" in opened_names
-    # 範囲内の 12/01 も開かれる
-    assert "一覧_20251201.xlsx" in opened_names
-    # 開かれたのは2件だけ
+    # 12/15 と 12/18 は開かれない（比較相手の直前1件より更に古い）
+    assert "一覧_20251215.xlsx" not in opened_names
+    assert "一覧_20251218.xlsx" not in opened_names
+    # 直前の 12/20 だけが比較相手として開かれる
+    assert "一覧_20251220.xlsx" in opened_names
+    # 範囲内の 1/10 も開かれる
+    assert "一覧_20260110.xlsx" in opened_names
+    # 開かれたのは2件だけ（比較相手 1 + 範囲内 1）
     assert len(opened) == 2
 
 
 def test_run_reads_only_one_predecessor_outside_the_range(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """範囲外に古いファイルが複数あっても、比較相手として開くのは直前1件だけ。"""
+    """範囲外に前年のファイルが複数あっても、比較相手として開くのは直前1件だけ。
+
+    1月実行時、前年12月のファイルが複数あっても、最も新しい1件だけが比較相手として読まれる。
+    """
     input_folder, output_folder = setup_run(tmp_path)
-    # 4月10日実行 → 下限は3月1日。範囲外（3/1より前）のファイルが複数ある
-    # 3/1 の比較相手として開かれるのは範囲外のうち最も新しい 2/5 だけ
-    make_book(input_folder / "一覧_20260130.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260131.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260205.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
+    # 1月15日実行 → 下限は今年の1月1日
+    # 前年12月のファイルが複数：12/01, 12/05, 12/20
+    # 1/10 の比較相手として開かれるのは最も新しい 12/20 だけ
+    make_book(input_folder / "一覧_20251201.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251205.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251220.xlsx", [["x", "2026-01-05", "標準A", "完了"]])
     # 範囲内
-    make_book(input_folder / "一覧_20260301.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260302.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260110.xlsx", [["x", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260112.xlsx", [["x", "2026-01-05", "標準A", "完了"]])
 
     opened: list[Path] = []
 
@@ -358,34 +380,38 @@ def test_run_reads_only_one_predecessor_outside_the_range(
         return {}
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 4, 10))
+        run(datetime.date(2026, 1, 15))
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
-    # 範囲外で比較相手にもならない古いファイルは開かれない
-    assert "一覧_20260130.xlsx" not in opened_names
-    assert "一覧_20260131.xlsx" not in opened_names
-    # 直前の 2/5 だけは比較相手として開かれる
-    assert "一覧_20260205.xlsx" in opened_names
+    # 前年12月のうち比較相手にならない古いファイルは開かれない
+    assert "一覧_20251201.xlsx" not in opened_names
+    assert "一覧_20251205.xlsx" not in opened_names
+    # 直前の 12/20 だけが比較相手として開かれる
+    assert "一覧_20251220.xlsx" in opened_names
     # 範囲内ファイルも開かれる
-    assert "一覧_20260301.xlsx" in opened_names
-    assert "一覧_20260302.xlsx" in opened_names
-    # 開かれたのは合計4件（比較相手1 + 範囲内2 + 範囲内3/1より後→ 3/1, 3/2）
+    assert "一覧_20260110.xlsx" in opened_names
+    assert "一覧_20260112.xlsx" in opened_names
+    # 比較相手 1 件 + 範囲内 2 件 = 3 件
     assert len(opened) == 3
 
 
 def test_run_only_opens_one_predecessor_when_multiple_outside_exist(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """範囲外に古いファイルが2つ以上あっても、比較相手として開かれるのは直前の1つだけ。"""
+    """範囲外の前年ファイルが2つ以上あっても、比較相手として開かれるのは直前の1つだけ。
+
+    1月実行時、前年12月のファイルが3つあっても、比較相手として読まれるのは最も新しい1件だけ。
+    """
     input_folder, output_folder = setup_run(tmp_path)
-    # 4月10日実行 → 下限は3月1日
-    # 範囲外の古いファイルが複数：2/25, 2/27, 2/28（3/1 の比較相手として開かれるのは 2/28 だけ）
-    make_book(input_folder / "一覧_20260225.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260227.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260228.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
+    # 1月15日実行 → 下限は今年の1月1日
+    # 前年12月のファイルが3つ：12/15, 12/18, 12/20
+    # 1/10 の比較相手として開かれるのは最も新しい 12/20 だけ
+    make_book(input_folder / "一覧_20251215.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251218.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20251220.xlsx", [["old", "2026-01-05", "標準A", "完了"]])
     # 範囲内
-    make_book(input_folder / "一覧_20260301.xlsx", [["x", "2026-03-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260110.xlsx", [["a", "2026-01-05", "標準A", "完了"]])
 
     opened: list[Path] = []
 
@@ -394,18 +420,18 @@ def test_run_only_opens_one_predecessor_when_multiple_outside_exist(
         return {}
 
     with patch("src.diff.read_records", side_effect=_capture):
-        run(datetime.date(2026, 4, 10))
+        run(datetime.date(2026, 1, 15))
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     opened_names = [p.name for p in opened]
-    # 範囲外の 2/25 と 2/27 は開かれてはいけない
-    assert "一覧_20260225.xlsx" not in opened_names
-    assert "一覧_20260227.xlsx" not in opened_names
-    # 直前の 2/28 だけが比較相手として開かれる
-    assert "一覧_20260228.xlsx" in opened_names
-    # 範囲内の 3/1 も開かれる
-    assert "一覧_20260301.xlsx" in opened_names
-    # 全体で2つしか開かれていない
+    # 前年12月のうち 12/15 と 12/18 は開かれてはいけない
+    assert "一覧_20251215.xlsx" not in opened_names
+    assert "一覧_20251218.xlsx" not in opened_names
+    # 直前の 12/20 だけが比較相手として開かれる
+    assert "一覧_20251220.xlsx" in opened_names
+    # 範囲内の 1/10 も開かれる
+    assert "一覧_20260110.xlsx" in opened_names
+    # 比較相手 1 + 範囲内 1 = 2 件
     assert len(opened) == 2
 
 
@@ -414,10 +440,11 @@ def test_run_does_not_open_files_after_today(
 ) -> None:
     """今日より後の日付のファイルは開かれない。"""
     input_folder, output_folder = setup_run(tmp_path)
-    # 4月10日実行 → 範囲は 3/1〜4/10
-    # 範囲内最初（3/5）の比較相手として 2/28 を置く（範囲外だが例外的に開かれる）
-    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-05", "標準A", "完了"]])
-    make_book(input_folder / "一覧_20260305.xlsx", [["a", "2026-04-05", "標準A", "完了"]])
+    # 4月10日実行 → 範囲は 1/1〜4/10
+    # 比較相手用に 2025/12/20 を置く（範囲外だが例外的に開かれる）
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260201.xlsx", [["a", "2026-04-05", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260405.xlsx", [["a", "2026-04-05", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260408.xlsx", [["a", "2026-04-05", "標準A", "完了"]])
     make_book(input_folder / "一覧_20260410.xlsx", [["a", "2026-04-05", "標準A", "完了"]])
     # 今日より後
@@ -439,18 +466,20 @@ def test_run_does_not_open_files_after_today(
     # 範囲内のファイルは開かれる
     assert "一覧_20260410.xlsx" in opened_names
     assert "一覧_20260408.xlsx" in opened_names
-    assert "一覧_20260305.xlsx" in opened_names
-    # 比較相手の 2/28 も開かれる（範囲外だが直前1件）
-    assert "一覧_20260228.xlsx" in opened_names
+    assert "一覧_20260405.xlsx" in opened_names
+    assert "一覧_20260201.xlsx" in opened_names
+    # 比較相手の 2025/12/20 も開かれる（範囲外だが直前1件）
+    assert "一覧_20251220.xlsx" in opened_names
 
 
 def test_run_skips_when_no_files_in_range(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """範囲（前月の初日〜今日）内にファイルが無いとき、落ちずにログを出して終わる。"""
+    """範囲（今年の1月1日〜今日）内にファイルが無いとき、落ちずにログを出して終わる。"""
     input_folder, output_folder = setup_run(tmp_path)
-    # 4月10日実行 → 範囲は 3/1〜4/10。すべて範囲外のファイルしかない
-    make_book(input_folder / "一覧_20260225.xlsx", [["a", "2026-02-20", "標準A", "完了"]])
+    # 1月10日実行 → 範囲は 1/1〜1/10。範囲内のファイルが無く、前年の12月ファイルも
+    # in_range が空なので比較相手としても読まれない
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2025-12-20", "標準A", "完了"]])
 
     opened: list[Path] = []
 
@@ -460,7 +489,7 @@ def test_run_skips_when_no_files_in_range(
 
     with patch("src.diff.read_records", side_effect=_capture):
         # 落ちないことを確認（戻り値は output_path）
-        result = run(datetime.date(2026, 4, 10))
+        result = run(datetime.date(2026, 1, 10))
 
     print("\n[opened-files] " + ", ".join(p.name for p in opened))
     # ファイルは何も開かれない
