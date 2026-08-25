@@ -79,7 +79,8 @@ def write_csv(
     with CSV(path, columns=columns) as csv:
         csv.replace(_materialize(new_rows + leftover_rows, columns))
 
-    logger.info("出力しました: %s", path)
+    row_count = len(new_rows) + len(leftover_rows)
+    logger.info("出力しました: %s（%d 行 × %d 列）", path, row_count, len(columns))
 
 
 def _month_tuple_from_str(month_str: str) -> tuple[int, int]:

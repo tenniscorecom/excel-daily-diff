@@ -72,9 +72,11 @@ def run(today: datetime.date | None = None) -> Path:
     if conditions_changed or last_date is None:
         # 全期間を作り直す
         start_date = range_floor
+        run_mode = "条件変更による全期間の作り直し" if conditions_changed else "初回"
     else:
         # 増分計算（既存 CSV の最後の日付の次の日）が下限より古いなら下限を採用
         start_date = max(last_date + datetime.timedelta(days=1), range_floor)
+        run_mode = "増分"
 
     end_date = min(dated_files[-1][0], range_ceiling)
     targets, has_predecessor = _files_in_range(dated_files, start_date, end_date)
@@ -93,12 +95,25 @@ def run(today: datetime.date | None = None) -> Path:
         )
         return output_path
 
+    # 実行開始時の概要ログ（範囲・対象月・読み込み/読み飛ばし件数・比較相手を1か所で示す）
+    _log_run_header(
+        input_folder=input_folder,
+        target_months=target_months,
+        run_mode=run_mode,
+        start_date=start_date,
+        end_date=end_date,
+        dated_files=dated_files,
+        targets=targets,
+        has_predecessor=has_predecessor,
+    )
+
     counts = compute_counts(
         targets,
         target_months,
         plan_prefixes,
         kinds,
         rules,
+        range_start=start_date,
     )
 
     # 列として並べる全日付。開始日から終了日まで1日も飛ばさず、
@@ -141,6 +156,46 @@ def _target_months(today: datetime.date) -> list[tuple[int, int]]:
 def _date_range(start: datetime.date, end: datetime.date) -> list[datetime.date]:
     """``start`` から ``end`` までの全日付を古い順で返す（1日も飛ばさない）。"""
     return [start + datetime.timedelta(days=i) for i in range((end - start).days + 1)]
+
+
+def _log_run_header(
+    *,
+    input_folder: Path,
+    target_months: list[tuple[int, int]],
+    run_mode: str,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    dated_files: list[tuple[datetime.date, Path]],
+    targets: list[tuple[datetime.date, Path]],
+    has_predecessor: bool,
+) -> None:
+    """実行開始時の概要ログを出す。
+
+    「入力フォルダ／パターン／対象月／実行モード／読み込み範囲」と、
+    「フォルダ全件のうち何件読み、何件読み飛ばしたか」を1セットにして出す。
+    範囲外から比較相手として読む1ファイルがあれば、そのファイル名を別行で明示する。
+    """
+    logger.info("入力フォルダ: %s（パターン: %s）", input_folder, config.FILES.FILE_PATTERN)
+    logger.info(
+        "対象月: %s",
+        ", ".join(f"{y:04d}-{m:02d}" for y, m in target_months),
+    )
+    logger.info("実行モード: %s", run_mode)
+    logger.info("読み込み範囲: %s 〜 %s", start_date, end_date)
+
+    in_range_count = sum(1 for date, _ in targets if date >= start_date)
+    skipped_count = len(dated_files) - in_range_count
+
+    summary = (
+        f"入力フォルダのファイル {len(dated_files)} 件のうち、"
+        f"{in_range_count} 件を読み込み、{skipped_count} 件は範囲外で読み飛ばし"
+    )
+    if has_predecessor:
+        predecessor_name = targets[0][1].name
+        summary += f"。{start_date} の比較相手として、範囲外から 1 ファイル追加で読みます（{predecessor_name}）"
+    else:
+        summary += "（比較相手はありません）"
+    logger.info("%s", summary)
 
 
 def _range_floor(today: datetime.date) -> datetime.date:

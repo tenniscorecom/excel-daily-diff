@@ -41,18 +41,35 @@ def compute_counts(
     plan_prefixes: tuple[str, ...],
     kinds: tuple[str, ...],
     rules: tuple[ColumnRule, ...],
+    range_start: datetime.date | None = None,
 ) -> Counts:
     """日付の古い順に並んだファイルを、隣り合う組で突き合わせ、対象月ごとに数える。
 
     1ファイルは1回だけ読む。読んだ行は対象月で振り分ける（複数月が対象なら
     そのぶん全部数える）。
+    ``range_start`` を渡すと、範囲内のファイルに対して ``(n/total)`` の
+    進捗をログに出す。範囲外（比較相手として例外的に読む1ファイル）は
+    進捗ログの対象外。
     """
     by_row: dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]] = {}
     compared_dates: set[datetime.date] = set()
     previous_by_month: dict[tuple[int, int], dict[str, Record]] | None = None
+    previous_path: Path | None = None
+
+    # 範囲内ファイル数（進捗の分母）。範囲外（比較相手）は含めない
+    in_range_total = sum(
+        1 for date, _ in dated_files if range_start is None or date >= range_start
+    )
+    in_range_index = 0
 
     for date, path in dated_files:
-        records = read_records(path, plan_prefixes, kinds, rules)
+        is_in_range = range_start is None or date >= range_start
+        progress: tuple[int, int] | None = None
+        if is_in_range and range_start is not None:
+            in_range_index += 1
+            progress = (in_range_index, in_range_total)
+
+        records = read_records(path, plan_prefixes, kinds, rules, progress=progress)
         # 対象月ごとに「その対象月の行だけ」を取り出した辞書を作る
         current_by_month: dict[tuple[int, int], dict[str, Record]] = {
             month: {} for month in target_months
@@ -73,22 +90,10 @@ def compute_counts(
                 for key in postponed_keys:
                     _inc(by_row, month, previous_records[key].plan_prefix, STATUS_POSTPONED, date)
             compared_dates.add(date)
-            logger.debug(
-                "%s: 積み上げ合計 %d / 延期合計 %d",
-                date,
-                sum(
-                    sum(values.values())
-                    for key, values in by_row.items()
-                    if key[2] == STATUS_ADDED and date in values
-                ),
-                sum(
-                    sum(values.values())
-                    for key, values in by_row.items()
-                    if key[2] == STATUS_POSTPONED and date in values
-                ),
-            )
+            _log_daily_diff(date, target_months, by_row, previous_path, path)
 
         previous_by_month = current_by_month
+        previous_path = path
 
     logger.info(
         "%d 日ぶんを比較しました", len(compared_dates)
@@ -96,6 +101,50 @@ def compute_counts(
     return Counts(
         compared_dates=compared_dates,
         by_row=by_row,
+    )
+
+
+def _log_daily_diff(
+    date: datetime.date,
+    target_months: list[tuple[int, int]],
+    by_row: dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]],
+    previous_path: Path | None,
+    current_path: Path,
+) -> None:
+    """1日ぶんの集計結果を INFO で出す。対象月が複数のときは対象月ごとにも出す。
+
+    ファイル2つの名前は ``(一覧_YYYYMMDD.xlsx → 一覧_YYYYMMDD.xlsx)`` で後ろに添える。
+    対象月が1つのときは ``[YYYY-MM]`` を省略し、複数あるときは各行に付ける。
+    """
+    show_month_suffix = len(target_months) > 1
+    previous_name = previous_path.name if previous_path is not None else "?"
+    current_name = current_path.name
+    file_pair = f"（{previous_name} → {current_name}）"
+    for month in target_months:
+        added = _sum_for(by_row, month, STATUS_ADDED, date)
+        postponed = _sum_for(by_row, month, STATUS_POSTPONED, date)
+        suffix = f" [{month[0]:04d}-{month[1]:02d}]" if show_month_suffix else ""
+        logger.info(
+            "%s%s: 積み上げ %d 件 / 延期 %d 件%s",
+            date.isoformat(),
+            suffix,
+            added,
+            postponed,
+            file_pair,
+        )
+
+
+def _sum_for(
+    by_row: dict[tuple[tuple[int, int], str, str], dict[datetime.date, int]],
+    month: tuple[int, int],
+    status: str,
+    date: datetime.date,
+) -> int:
+    """``(対象月, 種別, status)`` の各行について ``date`` の値を合計する。"""
+    return sum(
+        values.get(date, 0)
+        for key, values in by_row.items()
+        if key[0] == month and key[2] == status
     )
 
 

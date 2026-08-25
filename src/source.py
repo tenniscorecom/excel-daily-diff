@@ -48,11 +48,13 @@ def read_records(
     plan_prefixes: tuple[str, ...],
     kinds: tuple[str, ...],
     rules: tuple[ColumnRule, ...],
+    progress: tuple[int, int] | None = None,
 ) -> dict[str, Record]:
     """1ファイルを読み、条件を満たす行を 顧客番号 をキーにした辞書で返す。
 
     対象月の絞り込みはここでは行わない（複数月ぶんを1回の読み込みで
     振り分けるため、呼び出し側で対象月を見て分ける）。
+    ``progress`` を渡すと、ログに進捗 ``(n/total)`` を前置する。
     """
     records: dict[str, Record] = {}
     duplicate_ids: list[str] = []
@@ -102,8 +104,21 @@ def read_records(
             _source_date_column(),
             broken_dates,
         )
-    logger.info("%s: 条件に合う行 %d 件", path.name, len(records))
+    logger.info(
+        "%s%s: 条件に合う行 %d 件",
+        _progress_prefix(progress),
+        path.name,
+        len(records),
+    )
     return records
+
+
+def _progress_prefix(progress: tuple[int, int] | None) -> str:
+    """``read_records`` のログに進捗 ``"(3/42) "`` を前置する。``None`` なら空文字。"""
+    if progress is None:
+        return ""
+    current, total = progress
+    return f"({current}/{total}) "
 
 
 def load_rules() -> tuple[ColumnRule, ...]:
