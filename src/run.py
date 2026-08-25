@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 
 from comken import config
-from comken.core import DateFileFinder, date_in_name, today as _today
+from comken.core import DateFileFinder, date_in_name, month_start, today as _today
 
 from src.diff import compute_counts
 from src.report import last_date_in_csv, read_existing, write_csv
@@ -63,16 +63,35 @@ def run(today: datetime.date | None = None) -> Path:
         logger.info("[条件が変わりました] 過去ぶんは古い条件で数えられているため、全期間を作り直します")
         logger.info("--- 現在の条件 ---\n%s", current_conditions)
 
+    # 下限：実行日の前月の初日。それより古いファイルは対象外（古いファイルはシート構造が違うことがある）
+    range_floor = _range_floor(today)
+    # 上限：実行日。今日より後の日付のファイルは対象外
+    range_ceiling = today
+
     last_date = last_date_in_csv(existing) if existing else None
     if conditions_changed or last_date is None:
         # 全期間を作り直す
-        start_date = dated_files[0][0]
+        start_date = range_floor
     else:
-        # 増分計算（既存 CSV の最後の日付の次の日から）
-        start_date = last_date + datetime.timedelta(days=1)
+        # 増分計算（既存 CSV の最後の日付の次の日）が下限より古いなら下限を採用
+        start_date = max(last_date + datetime.timedelta(days=1), range_floor)
 
-    end_date = dated_files[-1][0]
-    targets = _files_in_range(dated_files, start_date, end_date)
+    end_date = min(dated_files[-1][0], range_ceiling)
+    targets, has_predecessor = _files_in_range(dated_files, start_date, end_date)
+    if not targets:
+        logger.warning(
+            "読み込み対象の範囲（%s 〜 %s）にファイルがありません: %s",
+            start_date,
+            end_date,
+            input_folder,
+        )
+        return output_path
+    if not has_predecessor:
+        logger.warning(
+            "範囲内ファイルの比較相手が範囲外にも存在しないため、%s ぶんは集計できません",
+            start_date,
+        )
+        return output_path
 
     counts = compute_counts(
         targets,
@@ -122,6 +141,18 @@ def _target_months(today: datetime.date) -> list[tuple[int, int]]:
 def _date_range(start: datetime.date, end: datetime.date) -> list[datetime.date]:
     """``start`` から ``end`` までの全日付を古い順で返す（1日も飛ばさない）。"""
     return [start + datetime.timedelta(days=i) for i in range((end - start).days + 1)]
+
+
+def _range_floor(today: datetime.date) -> datetime.date:
+    """読み込み対象の下限 = 実行日の前月の1日。
+
+    入力フォルダに何年ぶん溜まっていても、この日より古いファイルは開かない
+    （古いファイルはシート構造が違うことがあるため）。
+    1月のときは前年12月に正しく戻る。
+    """
+    first_of_this_month = today.replace(day=1)
+    last_of_prev_month = first_of_this_month - datetime.timedelta(days=1)
+    return month_start(last_of_prev_month)
 
 
 def _build_dates(
@@ -176,13 +207,19 @@ def _files_in_range(
     dated_files: list[tuple[datetime.date, Path]],
     start: datetime.date,
     end: datetime.date,
-) -> list[tuple[datetime.date, Path]]:
-    """期間内 + その1つ前のファイルを取り出して返す（最初の日の比較相手）。"""
+) -> tuple[list[tuple[datetime.date, Path]], bool]:
+    """期間内 + 範囲の最初のファイルの直前1ファイルを取り出して返す。
+
+    戻り値は ``(対象ファイルのリスト, 直前ファイルが範囲外にあったか)``。
+    直前ファイルが ``dated_files`` の先頭に達して範囲外に無いときは False を返し、
+    そのときは呼び出し側で集計をスキップする（比較相手がいないため）。
+    """
     in_range = [i for i, (date, _) in enumerate(dated_files) if start <= date <= end]
     if not in_range:
-        return []
+        return [], False
+    has_predecessor = in_range[0] > 0
     first = max(0, in_range[0] - 1)
-    return dated_files[first : in_range[-1] + 1]
+    return dated_files[first : in_range[-1] + 1], has_predecessor
 
 
 def _current_conditions_text(
