@@ -28,7 +28,6 @@ from pathlib import Path
 
 from comken import config
 from comken.core import DateFileFinder, date_in_name, today
-from comken.core.clock import month_end
 
 from src.diff import ByRow, DaySavedCallback, compute_counts
 from src.report import ROW_LABELS, last_date_in_csv, read_existing, write_csv
@@ -255,32 +254,31 @@ def _target_months(
     """業務日から対象月を決める。
 
     既定（``rolling_window_days=None``）は業務日の属する月だけを返す（既存の
-    年次累積モードの挙動、完全不変）。``rolling_window_days`` を渡したとき
-    （ローリングモード）は、業務日が月末まで ``rolling_window_days`` 日**未満**
-    のときだけ翌月も加える。ちょうど ``rolling_window_days`` 日残っている
-    業務日（= 残日数 = ``rolling_window_days``）は **翌月を含めない**——
-    「月末 N 日前〜月末」の **N 日ぶん**だけが lookahead の対象になる。
-    閾値は ``_range_floor`` の「直近 N 日ぶんの窓」と同じ値を使い、
-    ``ROLLING_WINDOW_DAYS = 7`` なら「月末7日前〜月末」の7日間で翌月も拾う。
+    年次累積モードの挙動、完全不変）。
 
-    月末が 12 月のときは翌月が翌年 1 月になるので、ラベル計算は年跨ぎも
-    正しく扱う（``month_end`` は純粋な暦計算で祝日に依存しない）。
+    ``rolling_window_days`` を渡したとき（ローリングモード）は **無条件で**
+    当月と翌月の両方を対象月に加える。業務日が月初でも月末でも、月内のどの
+    日であっても、戻り値は常に ``[当月, 翌月]`` の2要素になる（= 旧来の
+    「月末 N 日前からの lookahead」条件は廃止）。月単位のラベルに先取りで
+    件数を入れたいのはローリングモード固有の要件で、年次累積モードでは
+    翌月を先取りしない（「来月」行は構造上存在するが空のまま）。
 
-    戻り値は **必ず業務日自身の月が 0 番目、翌月が（あれば）1 番目** という
-    順序を保つ（``src/diff.py`` の ``_label_for_month_index`` がこの順序に
-    依存して「当月」「来月」のラベルへ変換する）。
+    月末が 12 月のときは翌月が翌年 1 月になるため、ラベル計算は年跨ぎも
+    正しく扱う。
+
+    戻り値は **必ず業務日自身の月が 0 番目、翌月が 1 番目** という順序を保つ
+    （``src/diff.py`` の ``_label_for_month_index`` がこの順序に依存して
+    「当月」「来月」のラベルへ変換する）。
     """
     months = [f"{business_date.year:04d}-{business_date.month:02d}"]
     if rolling_window_days is not None:
-        days_to_end = (month_end(business_date) - business_date).days
-        if days_to_end < rolling_window_days:
-            if business_date.month == 12:
-                next_year = business_date.year + 1
-                next_month = 1
-            else:
-                next_year = business_date.year
-                next_month = business_date.month + 1
-            months.append(f"{next_year:04d}-{next_month:02d}")
+        if business_date.month == 12:
+            next_year = business_date.year + 1
+            next_month = 1
+        else:
+            next_year = business_date.year
+            next_month = business_date.month + 1
+        months.append(f"{next_year:04d}-{next_month:02d}")
     return months
 
 

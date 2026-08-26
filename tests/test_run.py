@@ -91,72 +91,34 @@ def test_target_months_uses_business_date_month() -> None:
     assert _target_months(datetime.date(2026, 12, 25)) == ["2026-12"]
 
 
-def test_target_months_rolling_mode_keeps_only_current_month_when_far_from_end() -> None:
-    """ローリングモードでも、月の前半（残日数が窓幅以上）は当月だけ返す。
+def test_target_months_rolling_mode_always_includes_current_and_next_month() -> None:
+    """ローリングモードでは、月初でも月末でも無条件で当月 + 翌月の2件を返す。
 
-    4月の業務日 4/10・窓幅 7 → 残日数 = 20。20 < 7 は偽なので lookahead しない。
+    旧仕様の「月末 N 日前からの lookahead」は廃止し、月のどの業務日でも
+    ``[当月, 翌月]`` の2要素を返す。4月の月初から月末まで各日とも同じ結果になる。
     """
-    assert _target_months(
-        datetime.date(2026, 4, 10), rolling_window_days=7,
-    ) == ["2026-04"]
-    # 12月→1月の年跨ぎも、月の前半なら当月だけ
-    assert _target_months(
-        datetime.date(2026, 12, 10), rolling_window_days=7,
-    ) == ["2026-12"]
+    for day in (1, 5, 10, 15, 23, 24, 25, 30):
+        assert _target_months(
+            datetime.date(2026, 4, day), rolling_window_days=7,
+        ) == ["2026-04", "2026-05"]
 
 
-def test_target_months_rolling_mode_includes_next_month_near_month_end() -> None:
-    """ローリングモードで月末近く（残日数が窓幅未満）なら翌月も対象月に加える。
+def test_target_months_rolling_mode_handles_year_boundary_and_short_months() -> None:
+    """ローリングモードの年またぎと、月末日数が 28/29 日の月でも翌月を返す。
 
-    4/25・窓幅 7 → 残日数 = 5（= 4/30 - 4/25）。5 < 7 は真なので 4月 + 5月 を返す。
+    12月の業務日は翌年 1 月も対象月。2月の 28 日（平年）・29 日（閏年）も
+    純粋な暦計算で翌月を求めるため、月の日数には依存しない。
     """
-    assert _target_months(
-        datetime.date(2026, 4, 25), rolling_window_days=7,
-    ) == ["2026-04", "2026-05"]
-    # 月末当日も翌月を含める（残日数 = 0 < 7）
-    assert _target_months(
-        datetime.date(2026, 4, 30), rolling_window_days=7,
-    ) == ["2026-04", "2026-05"]
-    # 12月末→1月の年跨ぎ
-    assert _target_months(
-        datetime.date(2026, 12, 31), rolling_window_days=7,
-    ) == ["2026-12", "2027-01"]
-
-
-def test_target_months_rolling_mode_boundary_days_to_end_equals_window() -> None:
-    """境界値: 残日数が窓幅 **ちょうど** のときは lookahead しない（< 7 の判定）。
-
-    4/23・窓幅 7 → 残日数 = 7（= 4/30 - 4/23）。7 < 7 は偽なので当月のみ。
-    """
-    assert _target_months(
-        datetime.date(2026, 4, 23), rolling_window_days=7,
-    ) == ["2026-04"]
-
-
-def test_target_months_rolling_mode_boundary_days_to_end_equals_window_minus_one() -> None:
-    """境界値: 残日数が窓幅 - 1 のときは lookahead する。
-
-    4/24・窓幅 7 → 残日数 = 6（= 4/30 - 4/24）。6 < 7 は真なので翌月も加える。
-    """
-    assert _target_months(
-        datetime.date(2026, 4, 24), rolling_window_days=7,
-    ) == ["2026-04", "2026-05"]
-
-
-def test_target_months_rolling_mode_uses_calendar_month_end_not_business_days() -> None:
-    """月末判定は暦月末（``calendar.monthrange``）。4月は30日、2月は28/29日で計算する。
-
-    窓幅 31 のとき: 4月なら 4/1 は残日数 29 で「29 < 31」となり lookahead する。
-    """
-    # 4月1日・窓幅 31 → 残日数 29 < 31 で 4月 + 5月
-    assert _target_months(
-        datetime.date(2026, 4, 1), rolling_window_days=31,
-    ) == ["2026-04", "2026-05"]
-    # 2月1日（平年・28日）・窓幅 31 → 残日数 27 < 31 で 2月 + 3月
+    # 12月の各業務日 → 12月 + 翌年1月
+    for day in (5, 15, 25, 31):
+        assert _target_months(
+            datetime.date(2026, 12, day), rolling_window_days=7,
+        ) == ["2026-12", "2027-01"]
+    # 2月1日（平年・28日）
     assert _target_months(
         datetime.date(2026, 2, 1), rolling_window_days=31,
     ) == ["2026-02", "2026-03"]
-    # 2月1日（閏年・29日）・窓幅 31 → 残日数 28 < 31 で 2月 + 3月
+    # 2月1日（閏年・29日）
     assert _target_months(
         datetime.date(2024, 2, 1), rolling_window_days=31,
     ) == ["2024-02", "2024-03"]
@@ -1056,13 +1018,14 @@ def test_rolling_mode_year_cumulative_keeps_next_month_row_even_when_empty(
             assert value == "0" or value == ""
 
 
-def test_rolling_mode_writes_to_next_month_row_near_month_end(
+def test_rolling_mode_writes_next_month_row_for_next_month_cases(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """ローリングモード + 月末近くで、``来月`` 行に件数が入る。
+    """ローリングモードでは、月のどの業務日でも翌月の案件が「来月」行に反映される。
 
-    今日=4/25・窓 7。4/25 は残日数 5（< 7）なので lookahead 発火 → 4/25 vs 4/26
-    の比較結果が「当月（4月）」と「来月（5月）」の両方に入る。
+    今日=4/25・窓 7。ローリングモードでは無条件で当月 + 翌月の2要素を返すので、
+    4/25 の業務日の比較結果（4/25 vs 一覧_20260426.xlsx = 翌日ファイル）は、
+    4月案件が「当月（4月）」行に、5月案件が「来月（5月）」行にそれぞれ入る。
     """
     input_folder, output_folder = setup_run(
         tmp_path, today_date=datetime.date(2026, 4, 25), rolling_window_days=7,
@@ -1092,6 +1055,46 @@ def test_rolling_mode_writes_to_next_month_row_near_month_end(
     assert _cell(rows, "来月", "積み上げ", "2026-04-24") == "1"
     assert _cell(rows, "当月", "延期", "2026-04-24") == "0"
     assert _cell(rows, "来月", "延期", "2026-04-24") == "0"
+
+
+def test_rolling_mode_writes_next_month_row_early_in_month(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """ローリングモードでは、月初の業務日でも翌月の案件が「来月」行に入る。
+
+    旧仕様では「月末 N 日前」だけ lookahead していたため、4/10 では「来月」行が
+    常に空だった。新仕様では無条件で当月 + 翌月を返すため、月の前半でも
+    翌月（5月）の案件が増えていれば「来月」行に反映される。
+    """
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 10), rolling_window_days=7,
+    )
+    # 4/3 の比較相手として 2025/12/20 を置く（範囲外だが例外的に読まれる）
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260403.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    # 業務日 4/9（ファイル日付 4/10）で、翌月の案件 new_may が増える
+    make_book(
+        input_folder / "一覧_20260410.xlsx",
+        [
+            ["a", "2026-04-10", "標準A", "完了"],
+            ["new_apr", "2026-04-15", "標準A", "完了"],
+            ["new_may", "2026-05-02", "標準A", "完了"],
+        ],
+    )
+
+    run()
+
+    csv_path = output_folder / OUTPUT_NAME
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+
+    # 業務日 4/9 列 = 一覧_20260410.xlsx vs 一覧_20260403.xlsx の比較結果
+    # 当月の行: 4月案件 new_apr が増えた → 当月・積み上げ = 1
+    # 来月の行: 5月案件 new_may が増えた → 来月・積み上げ = 1
+    assert _cell(rows, "当月", "積み上げ", "2026-04-09") == "1"
+    assert _cell(rows, "来月", "積み上げ", "2026-04-09") == "1"
+    assert _cell(rows, "当月", "延期", "2026-04-09") == "0"
+    assert _cell(rows, "来月", "延期", "2026-04-09") == "0"
 
 
 def test_non_rolling_mode_key_unchanged_in_existing_tests(
