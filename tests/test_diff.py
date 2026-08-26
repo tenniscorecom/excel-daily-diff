@@ -13,8 +13,8 @@ from src.diff import (
 from src.source import Record
 
 
-def _record(customer_id: str, day: int = 1) -> Record:
-    return Record(customer_id, datetime.date(2026, 4, day), "標準")
+def _record(customer_id: str, day: int = 1, plan_prefix: str = "標準") -> Record:
+    return Record(customer_id, datetime.date(2026, 4, day), plan_prefix)
 
 
 def _target_months_for(business_date: datetime.date) -> list[str]:
@@ -34,8 +34,8 @@ def test_compute_counts_compares_adjacent_files_and_reads_each_once() -> None:
     with patch("src.diff.read_records", side_effect=records) as reader:
         counts = compute_counts(dated_files, _target_months_for, ("標準",), ("完了",), ())
 
-    added = counts.by_row[RowKey(LABEL_CURRENT_MONTH, STATUS_ADDED)]
-    postponed = counts.by_row[RowKey(LABEL_CURRENT_MONTH, STATUS_POSTPONED)]
+    added = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED)]
+    postponed = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED)]
     # 業務日 = ファイル日付 - 1日。
     # 一覧_20260421.xlsx(業務日 4/20) vs 一覧_20260420.xlsx(業務日 4/19):
     #   c は 4/20 にのみ存在 → 業務日 4/20 に積み上げ 1
@@ -82,16 +82,21 @@ def test_compute_counts_only_buckets_into_target_months() -> None:
     # 業務日 4/30 (5/1 ファイル vs 4/30 ファイル) → 対象月は 4月のみ
     #   4月: apr が両方 → 差分なし
     #   5月: 4/30 ファイル側に 5月のレコードが無いので、5月のバケットは無い
-    assert RowKey(LABEL_CURRENT_MONTH, STATUS_ADDED) not in counts.by_row
-    assert RowKey(LABEL_CURRENT_MONTH, STATUS_POSTPONED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED) not in counts.by_row
     # 業務日 5/1 (5/2 ファイル vs 5/1 ファイル) → 対象月は 5月のみ
     #   5月: may が両方 → 差分なし
-    assert RowKey(LABEL_CURRENT_MONTH, STATUS_ADDED) not in counts.by_row
-    assert RowKey(LABEL_CURRENT_MONTH, STATUS_POSTPONED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED) not in counts.by_row
 
 
-def test_compute_counts_merges_plan_prefixes_into_single_row() -> None:
-    """種別（標準/上位）の内訳行は出ず、``(当月, 判定)`` の単一行に合算される。"""
+def test_compute_counts_separates_rows_by_plan_prefix() -> None:
+    """種別（標準/上位）のレコードを別々の行に分けて集計する。
+
+    ``(当月, 標準, 判定)`` と ``(当月, 上位, 判定)`` がそれぞれ別セルとして
+    存在し、標準・上位の合算はされない。``PLAN_PREFIXES`` を変えてもこの
+    区別は変わらない（``run.py`` 側でこの区別をまとめて消していない）。
+    """
     paths = [Path("一覧_20260421.xlsx"), Path("一覧_20260422.xlsx")]
     records = [
         {
@@ -117,15 +122,50 @@ def test_compute_counts_merges_plan_prefixes_into_single_row() -> None:
         )
 
     # 一覧_20260421.xlsx(業務日 4/20) vs 一覧_20260422.xlsx(業務日 4/21):
-    #   標準の差し引き: 0
-    #   上位の差し引き: c_hi 追加 +1、b_hi 消失 -1
-    # 合算で (当月, 積み上げ) = 1、(当月, 延期) = 1
-    added = counts.by_row[(LABEL_CURRENT_MONTH, STATUS_ADDED)]
-    postponed = counts.by_row[(LABEL_CURRENT_MONTH, STATUS_POSTPONED)]
-    assert added[datetime.date(2026, 4, 21)] == 1
-    assert postponed[datetime.date(2026, 4, 21)] == 1
-    # 種別別の行は存在しない（キーは全てタプル長 2）
-    assert all(len(key) == 2 for key in counts.by_row)
+    #   標準: 差し引き 0（a_std は両方にある）→ キーが作られない（差分が無いので）
+    #   上位: c_hi 追加 +1、b_hi 消失 -1 → (当月, 上位, 積み上げ) = 1、
+    #         (当月, 上位, 延期) = 1
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED) not in counts.by_row
+    hi_added = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", STATUS_ADDED)]
+    hi_postponed = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", STATUS_POSTPONED)]
+    assert hi_added[datetime.date(2026, 4, 21)] == 1
+    assert hi_postponed[datetime.date(2026, 4, 21)] == 1
+    # キーは全て3要素で、種別ごとに別セルとして存在する
+    assert all(len(key) == 3 for key in counts.by_row)
+    # 差分の出た 2 セルだけ by_row に登録される（差分が無い行はキー自体が無い）
+    assert len(counts.by_row) == 2
+
+
+def test_compute_counts_row_keys_follow_plan_prefixes_order() -> None:
+    """``PLAN_PREFIXES`` の並び順がそのまま by_row のキー順序になる。
+
+    種別は ``compute_counts`` 側で並べ替えず、``read_records`` 側で
+    ``PLAN_PREFIXES`` の順にマッチした先頭一致の語が入る（``Record.plan_prefix``）。
+    ここでは ``PLAN_PREFIXES = ("上位", "標準")`` の逆順でも、呼び出し側が知る
+    順序はそのまま by_row のキー集合に反映されることを確認する。
+    """
+    paths = [Path("一覧_20260421.xlsx"), Path("一覧_20260422.xlsx")]
+    records = [
+        {"a": Record("a", datetime.date(2026, 4, 10), "上位")},
+        {"b": Record("b", datetime.date(2026, 4, 10), "上位")},
+    ]
+    dated_files = [
+        (datetime.date(2026, 4, 21), paths[0]),
+        (datetime.date(2026, 4, 22), paths[1]),
+    ]
+
+    with patch("src.diff.read_records", side_effect=records):
+        counts = compute_counts(
+            dated_files, _target_months_for, ("上位", "標準"), ("完了",), ()
+        )
+
+    # 上位の行（= (当月, 上位, 積み上げ) ）に 1 件
+    assert counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", STATUS_ADDED)][
+        datetime.date(2026, 4, 21)
+    ] == 1
+    # 標準はレコードが無いためキーが作られない
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED) not in counts.by_row
 
 
 def test_compute_counts_uses_business_date_target_months_across_month_boundary() -> None:
@@ -170,9 +210,11 @@ def test_compute_counts_uses_business_date_target_months_across_month_boundary()
     #   previous_by_month["2026-05"] は 5/1 ファイル側の 5月 bucket（空）。
     #   5/2 ファイルの "2026-05" bucket に may がある → 積み上げ 1
     # 延期は一切発生しない
-    assert (LABEL_CURRENT_MONTH, STATUS_POSTPONED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED) not in counts.by_row
     # 積み上げキーは業務日 5/1 で 1
-    assert counts.by_row[(LABEL_CURRENT_MONTH, STATUS_ADDED)][datetime.date(2026, 5, 1)] == 1
+    assert counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED)][
+        datetime.date(2026, 5, 1)
+    ] == 1
 
 
 def test_compute_counts_reads_each_file_only_once_across_month_boundary() -> None:
@@ -237,8 +279,11 @@ def test_compute_counts_emits_next_month_label_for_lookahead() -> None:
         )
 
     # 業務日 4/30 で「来月 = 5月」も対象に入る。
-    # 4/30 ファイルには 5月のレコードが無い、5/1 ファイルには may がある → 「来月, 積み上げ」= 1
-    assert counts.by_row[RowKey(LABEL_NEXT_MONTH, STATUS_ADDED)][datetime.date(2026, 4, 30)] == 1
+    # 4/30 ファイルには 5月のレコードが無いが、5/1 ファイルには may がある
+    # → (来月, 標準, 積み上げ) = 1
+    assert counts.by_row[RowKey(LABEL_NEXT_MONTH, "標準", STATUS_ADDED)][
+        datetime.date(2026, 4, 30)
+    ] == 1
     # 「来月」が対象だった業務日として記録される
     assert datetime.date(2026, 4, 30) in counts.target_dates_by_month[LABEL_NEXT_MONTH]
     # 「当月」も同様に記録される

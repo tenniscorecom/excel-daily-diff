@@ -16,8 +16,9 @@ src/run.py — 処理の本体
 8 月でも、業務日 1 月の列は 1 月の案件だけを対象にする（= 1 月時点の
 積み上げ・延期を 1 月の案件について見る、という集計の意図に沿う）。
 
-出力CSV の行は「当月/来月ラベル × 判定（積み上げ/延期）」の固定 4 行構成
-（種別（標準/上位）の内訳行は無くなり、合算のみ）。
+出力CSV の行は「当月/来月ラベル × 種別（``[FILTER] PLAN_PREFIXES`` の設定順）
+× 判定（積み上げ/延期）」の固定構成。``PLAN_PREFIXES`` が2件のとき 8 行で、
+件数が変われば行数も変わる（= 「常に 8 行」ではない）。
 """
 
 import datetime
@@ -141,11 +142,12 @@ def run() -> Path:
     # 合併して列見出しを作る（未比較の区間があると再開位置がズレるため）。
     existing_dates = _dates_from_existing(existing)
 
-    # 書き出す行は常に当月/来月の固定 2 ラベル（= 固定 4 行）。古い対象月や
-    # 種別（標準/上位）の内訳行はもう持たない（年別累積やローリングで変わる）。
-    # 既存 CSV に残っていた古いバージョンの行は列構成が大きく変わった以上、
-    # 暗黙には引き継がない（``write_csv`` 側で黙って捨てる）。
-    row_keys = list(ROW_LABELS)
+    # 書き出す行は「当月/来月のラベル × ``PLAN_PREFIXES`` の種別順」の
+    # 直積（× {積み上げ, 延期} で 2 倍）。``PLAN_PREFIXES`` が既定の
+    # ``[標準, 上位]`` のときは 2 × 2 × 2 = 8 行になる。
+    # 行の対象月は業務日基準の固定ラベル（年別累積/ローリングで対象月が変わる
+    # ことは無い）なので、対象月ごとに増減する複雑さは不要のまま。
+    row_keys = [(label, plan) for label in ROW_LABELS for plan in plan_prefixes]
 
     save_callback, save_sizes = _make_day_saver(
         output_path=output_path,
@@ -314,7 +316,7 @@ def _dates_from_existing(existing: list[dict[str, object]]) -> list[datetime.dat
     """既存 CSV の1行目から、日付ヘッダとして解釈できたものを抽出する。"""
     if not existing:
         return []
-    first_col_index = 2  # 対象月 / 判定 の2列のあと
+    first_col_index = 3  # 対象月 / 種別 / 判定 の3列のあと
     dates: list[datetime.date] = []
     for header in list(existing[0].keys())[first_col_index:]:
         text = header.strip()
@@ -368,14 +370,15 @@ def _make_day_saver(
     output_path: Path,
     start_date: datetime.date,
     existing_dates: list[datetime.date],
-    row_keys: list[str],
+    row_keys: list[tuple[str, str]],
     window_floor: datetime.date | None = None,
 ) -> tuple[DaySavedCallback, list[tuple[int, int]]]:
     """``compute_counts`` の ``on_day_done`` フックを組み立てる。
 
     日1日ぶんの突き合わせが終わるたびに呼ばれ、ここまでの累積状態を CSV へ
-    書き出す。CSV は少量のデータ（4行 × 数百列で数KB）なので、毎回まるごと
-    書き直しても Excel 1ファイルの読み込み（数万行）に比べて無視できる。
+    書き出す。CSV は少量のデータ（行数 ＝ ``len(row_keys) * 2`` × 数百列で数KB）
+    なので、毎回まるごと書き直しても Excel 1ファイルの読み込み（数万行）に
+    比べて無視できる。
 
     ただし、保存のたびに ``end_date`` まで全部の列を書き出すと、未比較の区間も
     列として出てしまい、``last_date_in_csv`` が本来の位置より先を指してしまう
@@ -384,8 +387,8 @@ def _make_day_saver(
 
     ローリングモードでは「直近 N 日の窓」があり、``window_floor`` が指定された
     ときは ``existing_dates`` のうち窓の外にある日付を捨ててから range と合併する
-    （= 窓の外に出た古い列を毎回保存で消す）。行は常に固定 4 行なので、窓の
-    外に出た行を捨てるような仕組みはもう要らない。
+    （= 窓の外に出た古い列を毎回保存で消す）。行は対象月が業務日基準の固定
+    ラベルなので、窓の外に出た行を捨てるような仕組みは要らない。
     年次累積モード（既定）は ``window_floor=None`` で、既存挙動と完全同一。
 
     戻り値は ``(保存コールバック, これまでの保存サイズのリスト)``。``save_sizes``

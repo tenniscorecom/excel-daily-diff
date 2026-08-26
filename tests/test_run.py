@@ -14,11 +14,14 @@ def _config_text(
     output_folder: Path,
     *,
     rolling_window_days: int | None = None,
+    plan_prefixes_value: str = "[標準, 上位]",
+    kinds_value: str = "[完了, 予定]",
 ) -> str:
     """テスト用の config.ini 本文。
 
     ``rolling_window_days`` を指定すると ``[FILES] ROLLING_WINDOW_DAYS`` 行を追加する。
     ``None`` のときは追加しない（年次累積モード既定）。
+    ``plan_prefixes_value`` / ``kinds_value`` で絞り込みを書き換えられる。
     """
     rolling_line = (
         f"ROLLING_WINDOW_DAYS = {rolling_window_days}\n"
@@ -37,8 +40,8 @@ PLAN_COLUMN = 種別
 KIND_COLUMN = 状態
 
 [FILTER]
-PLAN_PREFIXES = [標準, 上位]
-KINDS = [完了, 予定]
+PLAN_PREFIXES = {plan_prefixes_value}
+KINDS = {kinds_value}
 
 [REPORT]
 OUTPUT_FOLDER = {output_folder}
@@ -57,6 +60,7 @@ def setup_run(config_for_tests, monkeypatch):
         tmp_path: Path,
         *,
         kinds_value: str = "[完了, 予定]",
+        plan_prefixes_value: str = "[標準, 上位]",
         today_date: datetime.date | None = None,
         rolling_window_days: int | None = None,
     ) -> tuple[Path, Path]:
@@ -65,9 +69,11 @@ def setup_run(config_for_tests, monkeypatch):
         input_folder.mkdir()
         output_folder.mkdir()
         config_for_tests(_config_text(
-            input_folder, output_folder, rolling_window_days=rolling_window_days,
-        ).replace(
-            "KINDS = [完了, 予定]", f"KINDS = {kinds_value}"
+            input_folder,
+            output_folder,
+            rolling_window_days=rolling_window_days,
+            plan_prefixes_value=plan_prefixes_value,
+            kinds_value=kinds_value,
         ))
         if today_date is not None:
             # ``src.run.today`` を固定値で差し替える（テストのたびに違う「今日」を使う）。
@@ -168,10 +174,11 @@ def test_target_months_non_rolling_mode_ignores_lookahead() -> None:
 def test_run_starts_from_oldest_file_when_no_csv_exists(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """初回実行: 4 行（当月×{積み上げ/延期}, 来月×{積み上げ/延期}）構成で集計される。
+    """初回実行: 8 行（当月/来月 × 標準/上位 × 積み上げ/延期）構成で集計される。
 
-    ローリングモードの設定は無し（年次累積モード既定）なので、「来月」行は構造上
-    存在するが実データは入らない。
+    ``[FILTER] PLAN_PREFIXES = [標準, 上位]`` なので、行数は 8 固定。
+    ローリングモードの設定は無し（年次累積モード既定）なので、「来月」行は
+    構造上存在するが実データは入らない。
     """
     input_folder, output_folder = setup_run(
         tmp_path, today_date=datetime.date(2026, 4, 25)
@@ -198,24 +205,31 @@ def test_run_starts_from_oldest_file_when_no_csv_exists(
     with CSV(csv_path) as csv:
         rows = list(csv.read())
 
-    # 行は常に 4 行（当月/来月 × 積み上げ/延期）。種別（標準/上位）の行は無い
-    assert len(rows) == 4
+    # 行は常に 8 行（当月/来月 × 標準/上位 × 積み上げ/延期）
+    assert len(rows) == 8
     labels = [_row_label(r) for r in rows]
     assert labels == [
-        ("当月", "積み上げ"),
-        ("当月", "延期"),
-        ("来月", "積み上げ"),
-        ("来月", "延期"),
+        ("当月", "標準", "積み上げ"),
+        ("当月", "標準", "延期"),
+        ("当月", "上位", "積み上げ"),
+        ("当月", "上位", "延期"),
+        ("来月", "標準", "積み上げ"),
+        ("来月", "標準", "延期"),
+        ("来月", "上位", "積み上げ"),
+        ("来月", "上位", "延期"),
     ]
 
     # 業務日 4/21 (一覧_20260421.xlsx が無いので 一覧_20260420.xlsx vs 一覧_20260422.xlsx の比較)
-    # → add が 4/22 ファイルに新しく出現 → 業務日 4/21 に積み上げ 1
-    assert _cell(rows, "当月", "積み上げ", "2026-04-21") == "1"
-    assert _cell(rows, "当月", "延期", "2026-04-21") == "0"
+    # → add が 4/22 ファイルに新しく出現 → 業務日 4/21 に積み上げ 1（標準）
+    assert _cell(rows, "当月", "積み上げ", "2026-04-21", plan="標準") == "1"
+    assert _cell(rows, "当月", "延期", "2026-04-21", plan="標準") == "0"
+    # 上位には変化が無い → 該当行は "0"
+    assert _cell(rows, "当月", "積み上げ", "2026-04-21", plan="上位") == "0"
+    assert _cell(rows, "当月", "延期", "2026-04-21", plan="上位") == "0"
     # 業務日 4/22 (一覧_20260422.xlsx vs 一覧_20260423.xlsx)
-    # → add が 4/23 ファイルから消えた → 業務日 4/22 に延期 1
-    assert _cell(rows, "当月", "積み上げ", "2026-04-22") == "0"
-    assert _cell(rows, "当月", "延期", "2026-04-22") == "1"
+    # → add が 4/23 ファイルから消えた → 業務日 4/22 に延期 1（標準）
+    assert _cell(rows, "当月", "積み上げ", "2026-04-22", plan="標準") == "0"
+    assert _cell(rows, "当月", "延期", "2026-04-22", plan="標準") == "1"
 
 
 def test_run_writes_blank_for_business_days_without_files(
@@ -256,7 +270,7 @@ def test_run_writes_blank_for_business_days_without_files(
 def test_run_continues_from_last_csv_date_and_keeps_existing_columns(
     tmp_path: Path, make_book, setup_run
 ) -> None:
-    """増分実行でも行は常に 4 行固定。"""
+    """増分実行でも行は ``PLAN_PREFIXES`` の件数ぶんの固定行数になる。"""
     input_folder, output_folder = setup_run(
         tmp_path, today_date=datetime.date(2026, 4, 25)
     )
@@ -278,8 +292,8 @@ def test_run_continues_from_last_csv_date_and_keeps_existing_columns(
 
     with CSV(output_folder / OUTPUT_NAME) as csv:
         second_rows = list(csv.read())
-    # 行は常に 4 行固定
-    assert len(second_rows) == 4
+    # 行は常に固定（PLAN_PREFIXES が 2 件のとき 8 行）
+    assert len(second_rows) == 8
     # 業務日 4/20 の値が変わらない
     assert _cell(second_rows, "当月", "積み上げ", "2026-04-20") == first_4_20
     # 業務日 4/21, 4/22 が追加される（ファイル日付 4/22, 4/23 でそれぞれ作られる）
@@ -287,9 +301,11 @@ def test_run_continues_from_last_csv_date_and_keeps_existing_columns(
     assert "2026-04-22" in second_rows[0]
     # 業務日 4/23 は対応するファイル（ファイル日付 4/24）が無いので列が無い
     assert "2026-04-23" not in second_rows[0]
-    # 同じキー (当月, 積み上げ) の行が1つだけ（マージされている）
+    # 同じキー (当月, 標準, 積み上げ) の行が1つだけ（マージされている）
     matching = [r for r in second_rows
-                if r["対象月"] == "当月" and r["判定"] == "積み上げ"]
+                if r["対象月"] == "当月"
+                and r["種別"] == "標準"
+                and r["判定"] == "積み上げ"]
     assert len(matching) == 1
 
 
@@ -328,8 +344,8 @@ def test_run_row_has_values_only_for_target_month_dates(
     assert _cell(rows, "当月", "積み上げ", "2026-01-23") == "1"
 
 
-def _row_label(row: dict[str, object]) -> tuple[str, str]:
-    return (str(row["対象月"]), str(row["判定"]))
+def _row_label(row: dict[str, object]) -> tuple[str, str, str]:
+    return (str(row["対象月"]), str(row["種別"]), str(row["判定"]))
 
 
 def test_run_reads_each_file_once_across_month_boundary(
@@ -708,7 +724,7 @@ def test_run_keeps_partial_progress_when_read_fails_midway(
     with CSV(csv_path) as csv:
         rows = list(csv.read())
     headers = list(rows[0].keys())
-    date_headers = [h for h in headers if h not in ("対象月", "判定")]
+    date_headers = [h for h in headers if h not in ("対象月", "種別", "判定")]
     # 業務日 4/21 (5回目の保存) はあり、業務日 4/22 はまだ無い
     assert "2026-04-21" in date_headers
     assert "2026-04-22" not in date_headers
@@ -752,7 +768,7 @@ def test_run_resumes_from_last_csv_date_after_crash(
     assert csv_path.exists()
     with CSV(csv_path) as csv:
         first_rows = list(csv.read())
-    first_headers = [h for h in first_rows[0].keys() if h not in ("対象月", "判定")]
+    first_headers = [h for h in first_rows[0].keys() if h not in ("対象月", "種別", "判定")]
     # 1回目の保存：業務日 4/20 列まで書き込まれている
     # （4/21 ファイル vs 4/20 ファイルの比較結果が業務日 4/20 列に入る）
     assert "2026-04-20" in first_headers
@@ -766,7 +782,7 @@ def test_run_resumes_from_last_csv_date_after_crash(
 
     with CSV(csv_path) as csv:
         second_rows = list(csv.read())
-    second_headers = [h for h in second_rows[0].keys() if h not in ("対象月", "判定")]
+    second_headers = [h for h in second_rows[0].keys() if h not in ("対象月", "種別", "判定")]
     # 業務日 4/21, 4/22 列まで書き込まれている（一覧_20260422.xlsx と 一覧_20260423.xlsx の比較）
     assert "2026-04-21" in second_headers
     assert "2026-04-22" in second_headers
@@ -833,7 +849,7 @@ def test_run_advances_one_file_in_incremental_run(
     with CSV(output_folder / OUTPUT_NAME) as csv:
         first_rows = list(csv.read())
     last_date_header = max(
-        h for h in first_rows[0].keys() if h not in ("対象月", "判定")
+        h for h in first_rows[0].keys() if h not in ("対象月", "種別", "判定")
     )
     assert last_date_header == "2026-08-24"
 
@@ -878,7 +894,7 @@ def test_run_columns_span_month_boundary(
     with CSV(csv_path) as csv:
         rows = list(csv.read())
     headers = list(rows[0].keys())
-    date_headers = [h for h in headers if h not in ("対象月", "判定")]
+    date_headers = [h for h in headers if h not in ("対象月", "種別", "判定")]
 
     # 業務日 8/28 (一覧_20260829.xlsx) 〜 業務日 8/31 (一覧_20260901.xlsx) が連続
     assert "2026-08-28" in date_headers
@@ -895,8 +911,9 @@ def _cell(
     label: str,
     status: str,
     date_header: str,
+    plan: str = "標準",
 ) -> str:
-    row = _row(rows, label, status)
+    row = _row(rows, label, status, plan)
     value = row.get(date_header, "")
     return str(value)
 
@@ -905,11 +922,18 @@ def _row(
     rows: list[dict[str, object]],
     label: str,
     status: str,
+    plan: str = "標準",
 ) -> dict[str, object]:
     for row in rows:
-        if row["対象月"] == label and row["判定"] == status:
+        if (
+            row["対象月"] == label
+            and row["判定"] == status
+            and row["種別"] == plan
+        ):
             return row
-    raise AssertionError(f"行が見つかりません: {label} {status}")
+    raise AssertionError(
+        f"行が見つかりません: {label} {plan} {status}"
+    )
 
 
 # ====================================================================
@@ -971,7 +995,7 @@ def test_rolling_mode_first_run_only_writes_columns_within_window(
     with CSV(csv_path) as csv:
         rows = list(csv.read())
     headers = list(rows[0].keys())
-    date_headers = [h for h in headers if h not in ("対象月", "判定")]
+    date_headers = [h for h in headers if h not in ("対象月", "種別", "判定")]
     # 窓の下限 = 業務日 4/19。今日が 4/25 で、今日ファイル（= 4/26）は無いので
     # 比較が成立するのは 4/19・4/20・4/21。保存時は start_date から last_compared
     # までの range を必ず列に出す
@@ -981,8 +1005,8 @@ def test_rolling_mode_first_run_only_writes_columns_within_window(
     # 業務日 4/18 未満の列は作られない（窓の外）
     assert "2026-04-18" not in date_headers
     assert "2026-04-17" not in date_headers
-    # 行は常に 4 行固定
-    assert len(rows) == 4
+    # 行は ``PLAN_PREFIXES`` の件数ぶんの固定行数（= 8 行）
+    assert len(rows) == 8
 
 
 def test_rolling_mode_year_cumulative_keeps_next_month_row_even_when_empty(
@@ -1005,25 +1029,29 @@ def test_rolling_mode_year_cumulative_keeps_next_month_row_even_when_empty(
     with CSV(csv_path) as csv:
         rows = list(csv.read())
 
-    labels = [(r["対象月"], r["判定"]) for r in rows]
-    # 4 行固定（当月/来月 × 積み上げ/延期）
+    labels = [(r["対象月"], r["種別"], r["判定"]) for r in rows]
+    # 8 行固定（当月/来月 × {標準, 上位} × 積み上げ/延期）
     assert labels == [
-        ("当月", "積み上げ"),
-        ("当月", "延期"),
-        ("来月", "積み上げ"),
-        ("来月", "延期"),
+        ("当月", "標準", "積み上げ"),
+        ("当月", "標準", "延期"),
+        ("当月", "上位", "積み上げ"),
+        ("当月", "上位", "延期"),
+        ("来月", "標準", "積み上げ"),
+        ("来月", "標準", "延期"),
+        ("来月", "上位", "積み上げ"),
+        ("来月", "上位", "延期"),
     ]
     # 年次累積モードで月の前半 → 「来月」行は構造上あるが、月初の業務日しか
     # 比較していないので実データなし（対象月はすべて 4月のまま = 「当月」）
-    next_added = _row(rows, "来月", "積み上げ")
-    next_postponed = _row(rows, "来月", "延期")
+    next_added = _row(rows, "来月", "積み上げ", plan="標準")
+    next_postponed = _row(rows, "来月", "延期", plan="標準")
     # データが無い業務日列は空セル、比較対象で対象月だったら "0"。
     # 月の途中で全て 4 月以外の業務日がなければ「来月」の対象月は発生しない
     # → 対象月の列は "0" / "" が混在で、件数セルとして 0 や "" が入る
     # 「来月」行（積み上げ・延期の双方）が **4 月の業務日に件数を持っていない**ことを確認
     for row_dict in (next_added, next_postponed):
         for header, value in row_dict.items():
-            if header == "対象月" or header == "判定":
+            if header in ("対象月", "種別", "判定"):
                 continue
             assert value == "0" or value == ""
 
@@ -1088,7 +1116,7 @@ def test_non_rolling_mode_key_unchanged_in_existing_tests(
     with CSV(csv_path) as csv:
         rows = list(csv.read())
     headers = list(rows[0].keys())
-    date_headers = [h for h in headers if h not in ("対象月", "判定")]
+    date_headers = [h for h in headers if h not in ("対象月", "種別", "判定")]
     # 年次累積モード: 今年の 1/1 〜 今日（4/25）が対象
     assert any(h.startswith("2026-01") for h in date_headers), (
         f"1月の列が存在すること（年次累積）: {date_headers}"
@@ -1097,5 +1125,92 @@ def test_non_rolling_mode_key_unchanged_in_existing_tests(
     assert any(h.startswith("2026-04") for h in date_headers), (
         f"4月の列が存在すること（年次累積）: {date_headers}"
     )
-    # 行は常に 4 行固定
+    # 行は ``PLAN_PREFIXES`` の件数ぶんの固定行数（= 8 行）
+    assert len(rows) == 8
+
+
+def test_run_writes_eight_rows_for_two_plan_prefixes(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """``[FILTER] PLAN_PREFIXES = [標準, 上位]`` のとき、8 行
+    （= 当月/来月 × 2 種別 × 2 判定）が固定で並ぶ。
+
+    合算ではなく種別ごとに別行として並ぶため、``来月, 上位, 積み上げ`` などの
+    4 種以外の行も CSV に存在する。
+    """
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 25)
+    )
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260423.xlsx", [
+        ["a", "2026-04-10", "標準A", "完了"],
+        ["b", "2026-04-15", "上位B", "完了"],
+    ])
+
+    run()
+
+    csv_path = output_folder / OUTPUT_NAME
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+
+    # 8 行固定（当月/来月 × 標準/上位 × 積み上げ/延期）
+    assert len(rows) == 8
+    labels = [_row_label(r) for r in rows]
+    assert labels == [
+        ("当月", "標準", "積み上げ"),
+        ("当月", "標準", "延期"),
+        ("当月", "上位", "積み上げ"),
+        ("当月", "上位", "延期"),
+        ("来月", "標準", "積み上げ"),
+        ("来月", "標準", "延期"),
+        ("来月", "上位", "積み上げ"),
+        ("来月", "上位", "延期"),
+    ]
+    # 「当月・標準・積み上げ」と「当月・上位・積み上げ」が別のセルとして存在すること
+    # （= 種別をまたいで合算されていない）
+    std = _row(rows, "当月", "積み上げ", plan="標準")
+    hi = _row(rows, "当月", "積み上げ", plan="上位")
+    assert std is not hi
+    # 4/22 (一覧_20260423.xlsx - 一覧_20260420.xlsx, 直前の 4/20 ファイル比較) →
+    # "b" が新規 → 当月・上位・積み上げ = 1、当月・標準・積み上げ = 0
+    assert _cell(rows, "当月", "積み上げ", "2026-04-22", plan="標準") == "0"
+    assert _cell(rows, "当月", "積み上げ", "2026-04-22", plan="上位") == "1"
+
+
+def test_run_row_keys_depend_on_plan_prefixes_length(
+    tmp_path: Path, make_book, setup_run
+) -> None:
+    """``PLAN_PREFIXES`` の件数に応じて行数が変わる（= 「常に8行」ではない）。
+
+    1件に絞り込めば 4 行（= 旧来の構成）に戻ることを確認する。これは
+    「``PLAN_PREFIXES = [標準, 上位]`` のとき 8 行」とセットで確認することで、
+    「種別数 × 2 × 2」の構造になっていることを担保する。
+    """
+    input_folder, output_folder = setup_run(
+        tmp_path,
+        today_date=datetime.date(2026, 4, 25),
+        kinds_value="[完了]",
+        plan_prefixes_value="[標準]",
+    )
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260423.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+
+    run()
+
+    csv_path = output_folder / OUTPUT_NAME
+    with CSV(csv_path) as csv:
+        rows = list(csv.read())
+
+    # 1 種別 × 2 対象月 × 2 判定 = 4 行
     assert len(rows) == 4
+    labels = [_row_label(r) for r in rows]
+    assert labels == [
+        ("当月", "標準", "積み上げ"),
+        ("当月", "標準", "延期"),
+        ("来月", "標準", "積み上げ"),
+        ("来月", "標準", "延期"),
+    ]
