@@ -1296,8 +1296,8 @@ def test_run_logs_when_already_up_to_date_and_skips_calculation(
     with caplog.at_level(logging.INFO):
         run()
 
-    # 1. 「既に最新の業務日」という文言が出ている
-    assert "既に最新の業務日" in caplog.text
+    # 1. 「既に X 終了時点まで計算済みです」という文言が出ている
+    assert "既に 2026-08-26 終了時点まで計算済み" in caplog.text
     # 2. last_date（2026-08-26）と、次に必要なファイル日付（2026-08-28）が両方ログにある
     assert "2026-08-26" in caplog.text
     assert "2026-08-28" in caplog.text

@@ -99,7 +99,7 @@ def run() -> Path:
             # 次の業務日を計算するには start_date + 1日 付けのファイル（= 業務日
             # start_date 終了時点のデータ）が要るが、まだ届いていない。
             logger.info(
-                "既に最新の業務日（%s）まで計算済みです。次の業務日 %s を計算するには "
+                "既に %s 終了時点まで計算済みです。次に %s 終了時点を計算するには "
                 "%s 付けのファイルが必要です（まだ入力フォルダにありません）",
                 last_date,
                 start_date,
@@ -143,9 +143,9 @@ def run() -> Path:
     logger.info("入力フォルダ: %s（パターン: %s）", input_folder, config.FILES.FILE_PATTERN)
     logger.info("対象月: %s", ", ".join(target_months_in_range))
     logger.info("実行モード: %s", run_mode)
-    logger.info("読み込み範囲（業務日）: %s 〜 %s", start_date, end_date)
+    logger.info("読み込み範囲（終了日）: %s 〜 %s", start_date, end_date)
     logger.info(
-        "読み込んだファイルの最新日付: %s（このファイルの中身は業務日 %s 終了時点のデータです）",
+        "読み込んだファイルの最新日付: %s（このファイルの中身は %s 終了時点のデータです）",
         targets[-1][0],
         end_date,
     )
@@ -160,7 +160,7 @@ def run() -> Path:
     if has_predecessor:
         predecessor_name = targets[0][1].name
         summary += (
-            f"。{start_date}（業務日）の比較相手として、"
+            f"。{start_date}（終了日）の比較相手として、"
             f"範囲外から 1 ファイル追加で読みます（{predecessor_name}）"
         )
     else:

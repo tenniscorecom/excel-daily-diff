@@ -205,7 +205,7 @@ def compute_counts(
                 postponed = _sum_for(by_row, label, STATUS_POSTPONED, business_date)
                 suffix = f" [{month}]" if show_month_suffix else ""
                 logger.info(
-                    "業務日 %s（%s）%s: 積み上げ %d 件 / 延期 %d 件%s",
+                    "%s 終了時点（%s）%s: 積み上げ %d 件 / 延期 %d 件%s",
                     business_date.isoformat(),
                     label,
                     suffix,
@@ -216,7 +216,7 @@ def compute_counts(
             if business_date != date:
                 # 業務日とファイル名が1日ずれていることを明示（混同防止）。
                 logger.debug(
-                    "業務日 %s = ファイル %s の前日終了時点（%s → %s）",
+                    "%s 終了時点 = ファイル %s の前日ぶん（%s → %s）",
                     business_date.isoformat(),
                     date.isoformat(),
                     previous_name,
