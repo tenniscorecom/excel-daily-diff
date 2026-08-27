@@ -118,6 +118,11 @@ def run() -> Path:
     logger.info("対象月: %s", ", ".join(target_months_in_range))
     logger.info("実行モード: %s", run_mode)
     logger.info("読み込み範囲（業務日）: %s 〜 %s", start_date, end_date)
+    logger.info(
+        "読み込んだファイルの最新日付: %s（このファイルの中身は業務日 %s 終了時点のデータです）",
+        targets[-1][0],
+        end_date,
+    )
     # 業務日 start_date に対応するファイル日付は start_date + 1日
     in_range_file_start = start_date + datetime.timedelta(days=1)
     in_range_count = sum(1 for date, _ in targets if date >= in_range_file_start)

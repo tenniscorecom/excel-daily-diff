@@ -1217,3 +1217,34 @@ def test_run_row_keys_depend_on_plan_prefixes_length(
         ("来月", "標準", "積み上げ"),
         ("来月", "標準", "延期"),
     ]
+
+
+def test_run_logs_newest_file_date_with_corresponding_business_date(
+    tmp_path: Path, make_book, setup_run, caplog
+) -> None:
+    """読み込んだファイル群のうち最新のファイル日付と、そのファイルが表す業務日をログに出す。
+
+    集計表の横軸は **業務日**（= ファイル日付 - 1日）なので、今日=4/25 実行のとき
+    最新のファイルは ``一覧_20260424.xlsx`` で、業務日 4/23 終了時点のデータになる。
+    この事実を実行ログから直接読み取れるよう、新しいログ行を追加した。
+    ファイル日付の値と、それが表す業務日の値が両方ログに含まれていることを assert する。
+    """
+    input_folder, _output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 4, 25)
+    )
+    # 4/20 ファイルの比較相手として 2025/12/20 を置く
+    make_book(input_folder / "一覧_20251220.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260228.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260420.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    make_book(input_folder / "一覧_20260422.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+    # 今日=4/25 の中で最新のファイル。業務日 4/23 終了時点のデータ
+    make_book(input_folder / "一覧_20260424.xlsx", [["a", "2026-04-10", "標準A", "完了"]])
+
+    with caplog.at_level(logging.INFO):
+        run()
+
+    # ログに「読み込んだファイルの最新日付」という文言と、ファイル日付 4/24、
+    # そのファイルが表す業務日 4/23 が両方含まれている
+    assert "読み込んだファイルの最新日付" in caplog.text
+    assert "2026-04-24" in caplog.text
+    assert "2026-04-23" in caplog.text
