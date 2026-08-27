@@ -1,13 +1,17 @@
-# Access エクスポート用 VBA マクロ
+# Access 用 VBA マクロ
 
 Microsoft Access から当日付のデータを Excel にエクスポートする VBA マクロです。
 エクスポート先は Python 側 (`src/run.py`) が読み取る `INPUT_FOLDER` を想定しています。
+
+書き出したファイルを Access 内で読み直して集計まで済ませたいときは、
+`DiffPipeline.bas`（後述）を使うと Python 無しで `集計.csv` まで作れます。
 
 ## ファイル
 
 | ファイル | 役割 |
 |---|---|
-| `ExportV3.bas` | Access 側で動く VBA モジュール本体 |
+| `ExportV3.bas` | Access 側で動く VBA モジュール本体（Excel への書き出し） |
+| `DiffPipeline.bas` | 書き出し済みファイルを読み直して集計まで行う（Python 版と同じ処理） |
 
 ## 概要
 
@@ -21,6 +25,8 @@ Microsoft Access から当日付のデータを Excel にエクスポートす�
 2. `Alt + F11` で Visual Basic Editor（VBE）を開く
 3. **ファイル → ファイルのインポート** で `ExportV3.bas` を選択
 4. モジュール `ExportV3` がプロジェクトに追加される
+5. 集計まで Access で行う場合は、同じ手順で `DiffPipeline.bas` も追加する
+   （`DiffPipeline` は `ExportV3` の定数を参照するので、片方だけでは動かない）
 
 ## 定数の書き換え
 
@@ -89,3 +95,97 @@ Python 側は `[FILES] INPUT_FOLDER` を同じパスに合わせ、`FILE_PATTERN
 `<FILE_PREFIX>*.xlsx` の形に設定すれば、`src/run.py` がそのままこの VBA の
 出力ファイルを読み取って集計する（[FILTER] セクションで列名や絞り込み語を
 合わせるのが別途必要）。
+
+---
+
+# DiffPipeline.bas（Access 単体で集計まで終わらせる）
+
+Python ツール（`src/run.py`）と同じ「延期・積み上げ集計」を Access VBA 内で完結させる
+パイプライン。**Python が入っていない PC でも Access 単体で `集計.csv` を作れる**。
+`ExportV3.bas` が「Access → Excel の書き出し」までを担うのに対し、こちらは**書き出し
+済みの `V3_YYYYMMDD.xlsx` を読み直して集計する**。両方を同じ DB に入れておけば、
+エクスポートから集計まで Access だけで回る。
+
+## 実行方法
+
+VBE で `Sub RunFullPipeline` 内にカーソルを置いて `F5`、または Access の イミディエイト
+ウィンドウで `Call RunFullPipeline`。進捗と業務日ごとの件数は `Debug.Print` で
+イミディエイト ウィンドウに出て、完了時・失敗時は MsgBox で通知する。
+
+## 前提
+
+- `ExportV3.bas` と `DiffPipeline.bas` の**両方**を同じ DB にインポートしておく
+  （`DiffPipeline` は `ExportV3` の `Public Const` を参照するので片方だけでは動かない）
+- `OUTPUT_FOLDER`（= Python の `[FILES] INPUT_FOLDER`）に `V3_YYYYMMDD.xlsx` が日付ぶん
+  並んでいて、`FILE_PREFIX` がその接頭辞と一致している（ここでは**読み取り元**）
+- 参照設定の追加は不要（`Scripting.Dictionary` / `FileSystemObject` / `VBScript.RegExp` /
+  `ADODB.Stream` はすべて遅延バインディングで作る）
+
+## 定数の書き換え
+
+`ExportV3.bas` の 11 定数（上段 4 + フィルタ用 7）はそのまま使う。絞り込みは
+`APPLY_FILTER` の値によらず**常に適用される**（集計の前提条件のため）。
+`DiffPipeline.bas` 側で書き換えるのは次の 7 つ（`DATE_PATTERN` は通常触らない）:
+
+| 定数 | 意味 | 既定値 |
+|---|---|---|
+| `KEY_COLUMN` | 前日と当日を突き合わせるキー列（Python の `[SOURCE] KEY_COLUMN`） | `顧客番号` |
+| `ROLLING_MODE` | `False`=年次累積モード / `True`=ローリングモード | `False` |
+| `ROLLING_WINDOW_DAYS` | ローリングモードの窓幅（日数） | `7` |
+| `INCREMENTAL_SAVE` | 1日ぶん終わるたびに CSV を途中保存するか | `True` |
+| `CLEANUP_TEMP_TABLES` | 一時テーブルを最後に必ず削除するか | `True` |
+| `OUTPUT_NAME` | 出力 CSV のファイル名 | `集計.csv` |
+| `TEMP_TABLE_PREFIX` | 一時テーブル名の接頭辞 | `_V3_` |
+
+## 実行モード
+
+| モード | 設定 | 読む範囲（業務日） |
+|---|---|---|
+| 年次累積 | `ROLLING_MODE = False`（既定） | 実行年の 1/1 〜 今日 |
+| ローリング | `ROLLING_MODE = True` | 今日 -(`ROLLING_WINDOW_DAYS` - 1)日 〜 今日 |
+
+年次累積モードでは対象月が業務日の月だけなので、`来月` 行は構造上できるが中身は空のまま。
+ローリングモードでは業務日の当月と翌月の両方を対象月にする（12 月の翌月は翌年 1 月）。
+
+## 処理の流れ
+
+1. `OUTPUT_FOLDER` の `FILE_PREFIX*.xlsx` を集め、ファイル名の日付順に並べる
+2. 集計範囲（業務日の下限・上限）を決める
+3. 範囲内のファイル + 比較相手として直前 1 本（範囲外）を選ぶ
+4. 1 本ずつ `DoCmd.TransferSpreadsheet` で一時テーブル `_V3_YYYYMMDD` へ取り込む
+5. 隣り合う 2 本を SQL の `LEFT JOIN` で突き合わせ、`延期` / `積み上げ` を数える
+6. `INCREMENTAL_SAVE = True` なら 1 日ぶん終わるたびに CSV を書き出す（`False` なら最後に 1 回）
+7. 一時テーブルを削除する（途中で失敗して止まったときも削除する）
+
+**業務日はファイル名の日付 -1日**。入力ファイルは「前日終了時点」のデータなので、
+`V3_20260825.xlsx` の中身は 8/24 終了時点であり、`V3_20260824.xlsx` との差分は「8/24 に
+動いたぶん」になる（Python 側と同じ）。
+
+## 出力
+
+`OUTPUT_FOLDER` に `OUTPUT_NAME`（既定 `集計.csv`）で書き出す。UTF-8（BOM なし）・CRLF。
+
+- 列は `対象月, 種別, 判定, <業務日...>` の 3 キー列 + 業務日の列
+- 行は `当月`/`来月` × `PLAN_PREFIXES` の種別 × `積み上げ`/`延期` の固定構成
+  （`PLAN_PREFIXES = 標準,上位` のときは 8 行）
+- セルは 3 通り。件数 / `0`（比較したが 0 件）/ 空（比較できていない業務日、またはその
+  業務日ではそのラベルが対象外）
+
+## 制約・既知の制限
+
+- **増分実行はしない**。実行するたびに範囲全体を読み直して `集計.csv` を作り直す
+  （Python 側の「既存 CSV の最終列から続ける」動作は未対応）
+- 範囲内の最初のファイルに比較相手（範囲外の直前 1 本）が無いときは、何も出力せずに
+  終わる（Python 側と同じ挙動）。240 件超のファイルでは初回実行に時間がかかる
+- 出力先は入力フォルダと同じ `OUTPUT_FOLDER`。Python 側は `[REPORT] OUTPUT_FOLDER` に
+  分けているので、置き場を分けたいときは `OutputPath()` を書き換える
+- `集計.csv` を Excel で開いたまま実行すると、書き出しに失敗する
+- 取り込み先の列名は Excel の見出しそのままになる。見出しに余分な空白が入っていると
+  `[顧客番号]` などの列が見つからずエラーになる（Python 側は空白を落とすので違う）
+- `DATE_COLUMN` が文字列として取り込まれた場合、`Format([予定日],'yyyy-mm')` が日付として
+  整形されず対象月に当たらないことがある（`ExportV3.bas` のフィルタモードと同じ制限）
+- `KEY_COLUMN` がファイル内で重複していると、その分だけ件数が多く出る
+  （Python 側は最初の 1 行だけ採用して警告を出す）
+- `CLEANUP_TEMP_TABLES = False` のときは一時テーブル `_V3_*` が DB に残るので手動で
+  削除する（残っていても次回実行時に作り直すので支障はない）
+- `[EXCLUDE_CONTAINS]` などの追加絞り込みとシート名の候補指定は未対応（Python 側を使う）
