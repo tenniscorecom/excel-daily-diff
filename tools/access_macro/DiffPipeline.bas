@@ -583,8 +583,8 @@ Private Function CsvField(ByVal value As String) As String
     End If
 End Function
 
-' UTF-8（BOM なし）・改行 CRLF で書き出す。Excel でそのまま開けるようにするため。
-' ADODB.Stream で UTF-8 のバイト列に変換し、先頭 3 バイトの BOM を飛ばしてから
+' UTF-8（BOM 付き）・改行 CRLF で書き出す。Excel でそのまま開けるようにするため。
+' ADODB.Stream で UTF-8 のバイト列に変換し、BOM を捨てずにそのまま含めてから
 ' バイナリで書く。Open For Binary は既存ファイルを切り詰めないので、先に消して開く。
 Private Sub WriteUtf8(ByVal path As String, ByVal text As String)
     Dim stream As Object
@@ -598,7 +598,7 @@ Private Sub WriteUtf8(ByVal path As String, ByVal text As String)
     stream.WriteText text
     stream.Position = 0
     stream.Type = 1                 ' adTypeBinary
-    stream.Position = 3             ' UTF-8 BOM の 3 バイトを飛ばす
+    stream.Position = 0             ' UTF-8 BOM を含めるため先頭から読む
     bytes = stream.Read
     stream.Close
 
