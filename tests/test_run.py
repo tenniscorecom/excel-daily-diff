@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 from comken.toolbox.csv import CSV
 
+from src.report import ROW_LABELS
 from src.run import OUTPUT_NAME, _range_floor, _target_months, run
 
 
@@ -1248,3 +1249,70 @@ def test_run_logs_newest_file_date_with_corresponding_business_date(
     assert "読み込んだファイルの最新日付" in caplog.text
     assert "2026-04-24" in caplog.text
     assert "2026-04-23" in caplog.text
+
+
+def test_run_logs_when_already_up_to_date_and_skips_calculation(
+    tmp_path: Path, make_book, setup_run, caplog
+) -> None:
+    """同日次に計算すべき業務日 ``start_date`` が、実際に計算可能な上限 ``end_date``
+    を超えているとき（= 「次のファイルが来るのを待っているだけ」の日常的な状態）、
+    専用の info ログを出して何も計算せずに終わる。
+
+    検証:
+    - 「既に最新の業務日」という文言がログに出る
+    - last_date と「次に必要になるファイル日付」の両方がログに出る
+    - 出力 CSV は実行前後で変化しない（新規計算が起きない）
+    """
+    input_folder, output_folder = setup_run(
+        tmp_path, today_date=datetime.date(2026, 8, 27)
+    )
+
+    # 既存 ``集計.csv`` を最終業務日 2026-08-26 の状態で作る。
+    # ``write_csv`` を直接呼ぶことで、本物の「増分済み」状態を再現する
+    # （テスト用の手書き CSV だと列見出しが parse できない／日付が反映されない
+    # 恐れがあるため、``write_csv`` 経由で書く）。
+    from src.report import write_csv  # テストローカル import に統一
+    plan_prefixes = ("標準", "上位")
+    row_keys = [(label, plan) for label in ROW_LABELS for plan in plan_prefixes]
+    last_business_date = datetime.date(2026, 8, 26)
+    csv_path = output_folder / OUTPUT_NAME
+    write_csv(
+        csv_path,
+        by_row={},
+        dates=[(last_business_date, True)],
+        row_keys=row_keys,
+    )
+
+    # 実行前の CSV を丸ごと覚えておく
+    with CSV(csv_path) as csv:
+        before_rows = list(csv.read())
+    headers_before = list(before_rows[0].keys())
+
+    # 入力フォルダには今日のファイル ``一覧_20260827.xlsx`` だけを置く。
+    # 明日のファイル（一覧_20260828.xlsx）はまだ無い想定 → 業務日 8/27 を
+    # 計算するためのファイル日付 8/28 が無い状態。
+    make_book(input_folder / "一覧_20260827.xlsx", [["a", "2026-08-01", "標準A", "完了"]])
+
+    with caplog.at_level(logging.INFO):
+        run()
+
+    # 1. 「既に最新の業務日」という文言が出ている
+    assert "既に最新の業務日" in caplog.text
+    # 2. last_date（2026-08-26）と、次に必要なファイル日付（2026-08-28）が両方ログにある
+    assert "2026-08-26" in caplog.text
+    assert "2026-08-28" in caplog.text
+    # 3. CSV の内容が実行前後で変わっていない（列・行の構造と、列見出しの最終業務日が同じ）
+    with CSV(csv_path) as csv:
+        after_rows = list(csv.read())
+    assert [list(r.keys()) for r in after_rows] == [list(r.keys()) for r in before_rows]
+    date_headers_after = [
+        h for h in after_rows[0].keys() if h not in ("対象月", "種別", "判定")
+    ]
+    date_headers_before = [
+        h for h in headers_before if h not in ("対象月", "種別", "判定")
+    ]
+    assert date_headers_after == date_headers_before
+    # 念のため：最終業務日列は実行前と同じ 2026-08-26 のまま
+    assert date_headers_after[-1] == "2026-08-26"
+    # 「新規計算」が起きていないこと（= 2026-08-27 の列は作られていない）
+    assert "2026-08-27" not in date_headers_after

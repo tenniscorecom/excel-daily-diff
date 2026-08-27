@@ -88,6 +88,32 @@ def run() -> Path:
         dated_files[-1][0] - datetime.timedelta(days=1),
         range_ceiling,
     )
+    # 「次に計算すべき業務日」が「計算可能な上限」を超えているとき
+    # （= ``_files_in_range`` が必ず空リストを返す状態）は、先に専用ログを出して
+    # 早期リターンする。``start_date > end_date`` を満たすとき ``start_file > end_file``
+    # となるので ``_files_in_range`` は空確定。ここで先に拾うことで、
+    # 後続の「範囲内ファイル無し」分岐が誤って警告を出さずに済む。
+    if start_date > end_date:
+        if last_date is not None:
+            # 日次実行で日常的に起きる「追いついた」状態。warning ではなく info。
+            # 次の業務日を計算するには start_date + 1日 付けのファイル（= 業務日
+            # start_date 終了時点のデータ）が要るが、まだ届いていない。
+            logger.info(
+                "既に最新の業務日（%s）まで計算済みです。次の業務日 %s を計算するには "
+                "%s 付けのファイルが必要です（まだ入力フォルダにありません）",
+                last_date,
+                start_date,
+                (start_date + datetime.timedelta(days=1)).isoformat(),
+            )
+        else:
+            # 初回モード（last_date が None）で range_floor 以降のファイルが
+            # 1 つも無いという稀なケース。元の意味に近い警告のまま出す。
+            logger.warning(
+                "入力フォルダに %s 以降のファイルが見当たりません: %s",
+                range_floor,
+                input_folder,
+            )
+        return output_path
     targets, has_predecessor = _files_in_range(dated_files, start_date, end_date)
     if not targets:
         logger.warning(
