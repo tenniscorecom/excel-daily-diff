@@ -17,8 +17,9 @@ src/run.py — 処理の本体
 積み上げ・延期を 1 月の案件について見る、という集計の意図に沿う）。
 
 出力CSV の行は「当月/来月ラベル × 種別（``[FILTER] PLAN_PREFIXES`` の設定順）
-× 判定（積み上げ/延期）」の固定構成。``PLAN_PREFIXES`` が2件のとき 8 行で、
-件数が変われば行数も変わる（= 「常に 8 行」ではない）。
+× 作業班（``[FILTER] CREWS`` の設定順）× 判定（積み上げ/延期）」の固定構成。
+``PLAN_PREFIXES`` が2件・``CREWS`` が1件のとき 8 行で、件数が変われば
+行数も変わる（= 「常に 8 行」ではない）。
 """
 
 import datetime
@@ -44,6 +45,7 @@ def run() -> Path:
     today_date = today()
 
     plan_prefixes = tuple(config.FILTER.PLAN_PREFIXES)
+    crews = tuple(config.FILTER.CREWS)
     kinds = tuple(config.FILTER.KINDS)
     rules = load_rules()
     # comken の ``Config`` は絶対パスしか自動で ``Path`` に変換しないため、
@@ -172,12 +174,18 @@ def run() -> Path:
     # 合併して列見出しを作る（未比較の区間があると再開位置がズレるため）。
     existing_dates = _dates_from_existing(existing)
 
-    # 書き出す行は「当月/来月のラベル × ``PLAN_PREFIXES`` の種別順」の
-    # 直積（× {積み上げ, 延期} で 2 倍）。``PLAN_PREFIXES`` が既定の
-    # ``[標準, 上位]`` のときは 2 × 2 × 2 = 8 行になる。
+    # 書き出す行は「当月/来月のラベル × ``PLAN_PREFIXES`` の種別順
+    # × ``CREWS`` の作業班順」の直積（× {積み上げ, 延期} で 2 倍）。
+    # ``PLAN_PREFIXES`` が既定の ``[標準, 上位]``、``CREWS`` が既定の
+    # ``[教育]`` のときは 2 × 2 × 1 × 2 = 8 行になる。
     # 行の対象月は業務日基準の固定ラベル（年別累積/ローリングで対象月が変わる
     # ことは無い）なので、対象月ごとに増減する複雑さは不要のまま。
-    row_keys = [(label, plan) for label in ROW_LABELS for plan in plan_prefixes]
+    row_keys = [
+        (label, plan, crew)
+        for label in ROW_LABELS
+        for plan in plan_prefixes
+        for crew in crews
+    ]
 
     save_callback, save_sizes = _make_day_saver(
         output_path=output_path,
@@ -197,6 +205,7 @@ def run() -> Path:
         if rolling_window_days is not None
         else _target_months,
         plan_prefixes,
+        crews,
         kinds,
         rules,
         range_start=start_date,
@@ -345,7 +354,7 @@ def _dates_from_existing(existing: list[dict[str, object]]) -> list[datetime.dat
     """既存 CSV の1行目から、日付ヘッダとして解釈できたものを抽出する。"""
     if not existing:
         return []
-    first_col_index = 3  # 対象月 / 種別 / 判定 の3列のあと
+    first_col_index = 4  # 対象月 / 種別 / 作業班 / 判定 の4列のあと
     dates: list[datetime.date] = []
     for header in list(existing[0].keys())[first_col_index:]:
         text = header.strip()
@@ -399,7 +408,7 @@ def _make_day_saver(
     output_path: Path,
     start_date: datetime.date,
     existing_dates: list[datetime.date],
-    row_keys: list[tuple[str, str]],
+    row_keys: list[tuple[str, str, str]],
     window_floor: datetime.date | None = None,
 ) -> tuple[DaySavedCallback, list[tuple[int, int]]]:
     """``compute_counts`` の ``on_day_done`` フックを組み立てる。

@@ -48,11 +48,13 @@ class Record:
     customer_id: str
     date: datetime.date  # 案件そのものの日付。対象月の判定に使う
     plan_prefix: str  # 集計表の列グループになる（標準 / 上位）
+    crew: str  # 集計表のもう1つの列グループになる（作業班。完全一致）
 
 
 def read_records(
     path: Path,
     plan_prefixes: tuple[str, ...],
+    crews: tuple[str, ...],
     kinds: tuple[str, ...],
     rules: tuple[ColumnRule, ...],
     progress: Progress | None = None,
@@ -70,8 +72,9 @@ def read_records(
     key_column = config.SOURCE.KEY_COLUMN
     date_column = config.SOURCE.DATE_COLUMN
     plan_column = config.SOURCE.PLAN_COLUMN
+    crew_column = config.SOURCE.CREW_COLUMN
     kind_column = config.SOURCE.KIND_COLUMN
-    required_columns = (key_column, date_column, plan_column, kind_column)
+    required_columns = (key_column, date_column, plan_column, crew_column, kind_column)
 
     records: dict[str, Record] = {}
     duplicate_ids: list[str] = []
@@ -91,8 +94,9 @@ def read_records(
                 broken_dates += 1
                 continue
             plan_prefix = _plan_prefix(row.get(plan_column), plan_prefixes)
+            crew = _crew_match(row.get(crew_column), crews)
             kind_text = _text(row.get(kind_column))
-            if plan_prefix == "" or kind_text not in kinds:
+            if plan_prefix == "" or crew == "" or kind_text not in kinds:
                 continue
             if not _matches_rules(row, rules):
                 continue
@@ -103,6 +107,7 @@ def read_records(
                 customer_id=customer_id,
                 date=date,
                 plan_prefix=plan_prefix,
+                crew=crew,
             )
 
     if row_count == 0:
@@ -229,6 +234,17 @@ def _plan_prefix(value: object, prefixes: tuple[str, ...]) -> str:
         if plan.startswith(prefix):
             return prefix
     return ""
+
+
+def _crew_match(value: object, crews: tuple[str, ...]) -> str:
+    """作業班が対象語のいずれかと完全一致するかを返す。どれにも当てはまらなければ空文字。
+
+    ``_plan_prefix`` は前方一致で「どのグループPrefixに当てはまるか」を返すが、
+    作業班は完全一致で「対象語そのもの」を返す（部分一致や「◯◯作業班A」「◯◯作業班B」
+    のような派生語を別グループにしないため）。
+    """
+    crew = _text(value)
+    return crew if crew in crews else ""
 
 
 def _text(value: object) -> str:

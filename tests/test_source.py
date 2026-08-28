@@ -14,15 +14,15 @@ def test_filters_by_plan_kind_and_skips_out_of_target_rows(
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
         [
-            ["first", datetime.date(2026, 4, 1), "標準A", "完了"],
-            ["last", datetime.datetime(2026, 4, 30, 12), "上位B", "予定"],
-            ["plan_contains", "2026年04月22日", "特別な標準", "完了"],
-            ["kind_contains", "2026/04/22 00:00:00", "標準A", "完了予定"],
-            ["unknown_plan", "2026-04-22", "その他", "完了"],
+            ["first", datetime.date(2026, 4, 1), "標準A", "教育", "完了"],
+            ["last", datetime.datetime(2026, 4, 30, 12), "上位B", "教育", "予定"],
+            ["plan_contains", "2026年04月22日", "特別な標準", "教育", "完了"],
+            ["kind_contains", "2026/04/22 00:00:00", "標準A", "教育", "完了予定"],
+            ["unknown_plan", "2026-04-22", "その他", "教育", "完了"],
         ],
     )
 
-    records = read_records(path, ("標準", "上位"), ("完了", "予定"), ())
+    records = read_records(path, ("標準", "上位"), ("教育",), ("完了", "予定"), ())
 
     assert set(records) == {"first", "last"}
     assert records["first"].plan_prefix == "標準"
@@ -33,13 +33,13 @@ def test_skips_empty_and_broken_dates(tmp_path: Path, make_book) -> None:
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
         [
-            ["empty", None, "標準A", "完了"],
-            ["broken", "日付ではない", "標準A", "完了"],
-            ["valid", "2026-04-22", "標準A", "完了"],
+            ["empty", None, "標準A", "教育", "完了"],
+            ["broken", "日付ではない", "標準A", "教育", "完了"],
+            ["valid", "2026-04-22", "標準A", "教育", "完了"],
         ],
     )
 
-    assert set(read_records(path, ("標準",), ("完了",), ())) == {"valid"}
+    assert set(read_records(path, ("標準",), ("教育",), ("完了",), ())) == {"valid"}
 
 
 def test_normalizes_numeric_customer_id_and_keeps_first_duplicate(
@@ -48,12 +48,12 @@ def test_normalizes_numeric_customer_id_and_keeps_first_duplicate(
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
         [
-            [1001, "2026-04-21", "標準A", "完了"],
-            ["1001", "2026-04-22", "上位B", "予定"],
+            [1001, "2026-04-21", "標準A", "教育", "完了"],
+            ["1001", "2026-04-22", "上位B", "教育", "予定"],
         ],
     )
 
-    records = read_records(path, ("標準", "上位"), ("完了", "予定"), ())
+    records = read_records(path, ("標準", "上位"), ("教育",), ("完了", "予定"), ())
 
     assert list(records) == ["1001"]
     assert records["1001"].date == datetime.date(2026, 4, 21)
@@ -74,14 +74,14 @@ def test_applies_each_rule_operator(
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
         [
-            ["contains", "2026-04-22", "標準A", "完了", "離島A地区"],
-            ["exact", "2026-04-22", "標準A", "完了", "離島"],
-            ["other", "2026-04-22", "標準A", "完了", "市街地"],
+            ["contains", "2026-04-22", "標準A", "教育", "完了", "離島A地区"],
+            ["exact", "2026-04-22", "標準A", "教育", "完了", "離島"],
+            ["other", "2026-04-22", "標準A", "教育", "完了", "市街地"],
         ],
-        ["顧客番号", "予定日", "種別", "状態", "地域"],
+        ["顧客番号", "予定日", "種別", "施工作業班", "状態", "地域"],
     )
 
-    assert set(read_records(path, ("標準",), ("完了",), (rule,))) == expected
+    assert set(read_records(path, ("標準",), ("教育",), ("完了",), (rule,))) == expected
 
 
 def test_multiple_words_are_or_and_multiple_rules_are_and(
@@ -90,19 +90,19 @@ def test_multiple_words_are_or_and_multiple_rules_are_and(
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
         [
-            ["both_a", "2026-04-22", "標準A", "完了", "離島A地区", "東支店"],
-            ["both_b", "2026-04-22", "標準A", "完了", "山間部", "東支店"],
-            ["wrong_area", "2026-04-22", "標準A", "完了", "市街地", "東支店"],
-            ["wrong_branch", "2026-04-22", "標準A", "完了", "離島", "西支店"],
+            ["both_a", "2026-04-22", "標準A", "教育", "完了", "離島A地区", "東支店"],
+            ["both_b", "2026-04-22", "標準A", "教育", "完了", "山間部", "東支店"],
+            ["wrong_area", "2026-04-22", "標準A", "教育", "完了", "市街地", "東支店"],
+            ["wrong_branch", "2026-04-22", "標準A", "教育", "完了", "離島", "西支店"],
         ],
-        ["顧客番号", "予定日", "種別", "状態", "地域", "支店"],
+        ["顧客番号", "予定日", "種別", "施工作業班", "状態", "地域", "支店"],
     )
     rules = (
         ColumnRule("地域", ("離島", "山間部"), True, False),
         ColumnRule("支店", ("東支店",), False, False),
     )
 
-    assert set(read_records(path, ("標準",), ("完了",), rules)) == {
+    assert set(read_records(path, ("標準",), ("教育",), ("完了",), rules)) == {
         "both_a",
         "both_b",
     }
@@ -111,13 +111,14 @@ def test_multiple_words_are_or_and_multiple_rules_are_and(
 def test_raises_when_rule_column_is_missing(tmp_path: Path, make_book) -> None:
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
-        [["id", "2026-04-22", "標準A", "完了"]],
+        [["id", "2026-04-22", "標準A", "教育", "完了"]],
     )
 
     with pytest.raises(ExcelColumnNotFoundError):
         read_records(
             path,
             ("標準",),
+            ("教育",),
             ("完了",),
             (ColumnRule("地域", ("離島",), True, True),),
         )
@@ -130,14 +131,14 @@ def test_matches_columns_with_middle_dot_and_surrounding_spaces(
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
         [
-            ["stay", "2026-04-22", "標準A", "完了", "市街地"],
-            ["drop", "2026-04-22", "標準A", "完了", "離島B・北地区"],
+            ["stay", "2026-04-22", "標準A", "教育", "完了", "市街地"],
+            ["drop", "2026-04-22", "標準A", "教育", "完了", "離島B・北地区"],
         ],
-        ["顧客番号", "予定日", "種別", "状態", " 住所・地域 "],
+        ["顧客番号", "予定日", "種別", "施工作業班", "状態", " 住所・地域 "],
     )
     rule = ColumnRule("住所・地域", ("離島",), is_contains=True, is_exclude=True)
 
-    assert set(read_records(path, ("標準",), ("完了",), (rule,))) == {"stay"}
+    assert set(read_records(path, ("標準",), ("教育",), ("完了",), (rule,))) == {"stay"}
 
 
 def test_sheet_name_log_includes_used_sheet(
@@ -146,12 +147,55 @@ def test_sheet_name_log_includes_used_sheet(
     """使ったシート名がログに出る。"""
     path = make_book(
         tmp_path / "一覧_20260423.xlsx",
-        [["a", "2026-04-22", "標準A", "完了"]],
+        [["a", "2026-04-22", "標準A", "教育", "完了"]],
     )
 
     with caplog.at_level(logging.INFO):
-        read_records(path, ("標準",), ("完了",), ())
+        read_records(path, ("標準",), ("教育",), ("完了",), ())
 
     # "[Sheet1]" の形式で使われるシート名がログに出る
     used_sheet_logs = [record.message for record in caplog.records if "[Sheet1]" in record.message]
     assert any("条件に合う行" in message for message in used_sheet_logs)
+
+
+def test_filters_by_crew_with_exact_match(tmp_path: Path, make_book) -> None:
+    """作業班が ``CREWS`` のいずれかと完全一致する行だけが残る。
+
+    ``_plan_prefix`` の前方一致と異なり、作業班は完全一致で比較される。
+    部分一致（「◯◯作業班A」「◯◯作業班B」のような派生語）は別グループにせず、
+    ``CREWS`` に無いものは集計から外れる。
+    """
+    path = make_book(
+        tmp_path / "一覧_20260423.xlsx",
+        [
+            ["hit_exact", "2026-04-22", "標準A", "教育", "完了"],
+            ["miss_other_crew", "2026-04-22", "標準A", "その他区", "完了"],
+            ["miss_partial_match", "2026-04-22", "標準A", "教育A", "完了"],
+            ["miss_empty", "2026-04-22", "標準A", "", "完了"],
+        ],
+    )
+
+    records = read_records(path, ("標準",), ("教育",), ("完了",), ())
+
+    assert set(records) == {"hit_exact"}
+    assert records["hit_exact"].crew == "教育"
+
+
+def test_crew_match_is_not_partial_match(tmp_path: Path, make_book) -> None:
+    """``_crew_match`` が ``startswith`` 系ではなく ``in`` で完全一致することを担保する。
+
+    作業班が「教育A」「教育B」のように複数あって、片方だけ ``CREWS`` に入って
+    いるケースを想定。``_plan_prefix`` と同じ前方一致ロジックを誤って使うと
+    「教育B」も入ってしまう。ここが完全一致になっていることを assert する。
+    """
+    path = make_book(
+        tmp_path / "一覧_20260423.xlsx",
+        [
+            ["match", "2026-04-22", "標準A", "教育A", "完了"],
+            ["no_match", "2026-04-22", "標準A", "教育B", "完了"],
+        ],
+    )
+
+    records = read_records(path, ("標準",), ("教育A",), ("完了",), ())
+
+    assert set(records) == {"match"}

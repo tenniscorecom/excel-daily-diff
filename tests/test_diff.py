@@ -14,7 +14,7 @@ from src.source import Record
 
 
 def _record(customer_id: str, day: int = 1, plan_prefix: str = "標準") -> Record:
-    return Record(customer_id, datetime.date(2026, 4, day), plan_prefix)
+    return Record(customer_id, datetime.date(2026, 4, day), plan_prefix, "教育")
 
 
 def _target_months_for(business_date: datetime.date) -> list[str]:
@@ -32,10 +32,12 @@ def test_compute_counts_compares_adjacent_files_and_reads_each_once() -> None:
     dated_files = [(datetime.date(2026, 4, 20 + index), path) for index, path in enumerate(paths)]
 
     with patch("src.diff.read_records", side_effect=records) as reader:
-        counts = compute_counts(dated_files, _target_months_for, ("標準",), ("完了",), ())
+        counts = compute_counts(
+            dated_files, _target_months_for, ("標準",), ("教育",), ("完了",), ()
+        )
 
-    added = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED)]
-    postponed = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED)]
+    added = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_ADDED)]
+    postponed = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_POSTPONED)]
     # 業務日 = ファイル日付 - 1日。
     # 一覧_20260421.xlsx(業務日 4/20) vs 一覧_20260420.xlsx(業務日 4/19):
     #   c は 4/20 にのみ存在 → 業務日 4/20 に積み上げ 1
@@ -57,14 +59,14 @@ def test_compute_counts_only_buckets_into_target_months() -> None:
     # 4/30: 4月のレコード、5/1: 4月と5月のレコードが混在、5/2: 5月のレコード
     records = [
         {
-            "apr": Record("apr", datetime.date(2026, 4, 30), "標準"),
+            "apr": Record("apr", datetime.date(2026, 4, 30), "標準", "教育"),
         },
         {
-            "apr": Record("apr", datetime.date(2026, 4, 30), "標準"),
-            "may": Record("may", datetime.date(2026, 5, 10), "標準"),
+            "apr": Record("apr", datetime.date(2026, 4, 30), "標準", "教育"),
+            "may": Record("may", datetime.date(2026, 5, 10), "標準", "教育"),
         },
         {
-            "may": Record("may", datetime.date(2026, 5, 10), "標準"),
+            "may": Record("may", datetime.date(2026, 5, 10), "標準", "教育"),
         },
     ]
     dated_files = [
@@ -75,19 +77,19 @@ def test_compute_counts_only_buckets_into_target_months() -> None:
 
     with patch("src.diff.read_records", side_effect=records):
         counts = compute_counts(
-            dated_files, _target_months_for, ("標準",), ("完了",), ()
+            dated_files, _target_months_for, ("標準",), ("教育",), ("完了",), ()
         )
 
     # 業務日 4/29 (4/30 ファイル vs previous=無) → 比較なし
     # 業務日 4/30 (5/1 ファイル vs 4/30 ファイル) → 対象月は 4月のみ
     #   4月: apr が両方 → 差分なし
     #   5月: 4/30 ファイル側に 5月のレコードが無いので、5月のバケットは無い
-    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED) not in counts.by_row
-    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_ADDED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_POSTPONED) not in counts.by_row
     # 業務日 5/1 (5/2 ファイル vs 5/1 ファイル) → 対象月は 5月のみ
     #   5月: may が両方 → 差分なし
-    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED) not in counts.by_row
-    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_ADDED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_POSTPONED) not in counts.by_row
 
 
 def test_compute_counts_separates_rows_by_plan_prefix() -> None:
@@ -101,14 +103,14 @@ def test_compute_counts_separates_rows_by_plan_prefix() -> None:
     records = [
         {
             # 4月の標準レコード。両方にある → 差分なし
-            "a_std": Record("a_std", datetime.date(2026, 4, 10), "標準"),
+            "a_std": Record("a_std", datetime.date(2026, 4, 10), "標準", "教育"),
             # 4月の上位レコード。4/22 ファイルから消える → 延期 1
-            "b_hi": Record("b_hi", datetime.date(2026, 4, 10), "上位"),
+            "b_hi": Record("b_hi", datetime.date(2026, 4, 10), "上位", "教育"),
         },
         {
-            "a_std": Record("a_std", datetime.date(2026, 4, 10), "標準"),
+            "a_std": Record("a_std", datetime.date(2026, 4, 10), "標準", "教育"),
             # 4月の上位レコード。4/22 で新規 → 積み上げ 1
-            "c_hi": Record("c_hi", datetime.date(2026, 4, 10), "上位"),
+            "c_hi": Record("c_hi", datetime.date(2026, 4, 10), "上位", "教育"),
         },
     ]
     dated_files = [
@@ -118,21 +120,21 @@ def test_compute_counts_separates_rows_by_plan_prefix() -> None:
 
     with patch("src.diff.read_records", side_effect=records):
         counts = compute_counts(
-            dated_files, _target_months_for, ("標準", "上位"), ("完了",), ()
+            dated_files, _target_months_for, ("標準", "上位"), ("教育",), ("完了",), ()
         )
 
     # 一覧_20260421.xlsx(業務日 4/20) vs 一覧_20260422.xlsx(業務日 4/21):
     #   標準: 差し引き 0（a_std は両方にある）→ キーが作られない（差分が無いので）
     #   上位: c_hi 追加 +1、b_hi 消失 -1 → (当月, 上位, 積み上げ) = 1、
     #         (当月, 上位, 延期) = 1
-    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED) not in counts.by_row
-    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED) not in counts.by_row
-    hi_added = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", STATUS_ADDED)]
-    hi_postponed = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", STATUS_POSTPONED)]
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_ADDED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_POSTPONED) not in counts.by_row
+    hi_added = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", "教育", STATUS_ADDED)]
+    hi_postponed = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", "教育", STATUS_POSTPONED)]
     assert hi_added[datetime.date(2026, 4, 21)] == 1
     assert hi_postponed[datetime.date(2026, 4, 21)] == 1
-    # キーは全て3要素で、種別ごとに別セルとして存在する
-    assert all(len(key) == 3 for key in counts.by_row)
+    # キーは全て4要素で、種別ごとに別セルとして存在する
+    assert all(len(key) == 4 for key in counts.by_row)
     # 差分の出た 2 セルだけ by_row に登録される（差分が無い行はキー自体が無い）
     assert len(counts.by_row) == 2
 
@@ -147,8 +149,8 @@ def test_compute_counts_row_keys_follow_plan_prefixes_order() -> None:
     """
     paths = [Path("一覧_20260421.xlsx"), Path("一覧_20260422.xlsx")]
     records = [
-        {"a": Record("a", datetime.date(2026, 4, 10), "上位")},
-        {"b": Record("b", datetime.date(2026, 4, 10), "上位")},
+        {"a": Record("a", datetime.date(2026, 4, 10), "上位", "教育")},
+        {"b": Record("b", datetime.date(2026, 4, 10), "上位", "教育")},
     ]
     dated_files = [
         (datetime.date(2026, 4, 21), paths[0]),
@@ -157,15 +159,15 @@ def test_compute_counts_row_keys_follow_plan_prefixes_order() -> None:
 
     with patch("src.diff.read_records", side_effect=records):
         counts = compute_counts(
-            dated_files, _target_months_for, ("上位", "標準"), ("完了",), ()
+            dated_files, _target_months_for, ("上位", "標準"), ("教育",), ("完了",), ()
         )
 
     # 上位の行（= (当月, 上位, 積み上げ) ）に 1 件
-    assert counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", STATUS_ADDED)][
+    assert counts.by_row[RowKey(LABEL_CURRENT_MONTH, "上位", "教育", STATUS_ADDED)][
         datetime.date(2026, 4, 21)
     ] == 1
     # 標準はレコードが無いためキーが作られない
-    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_ADDED) not in counts.by_row
 
 
 def test_compute_counts_uses_business_date_target_months_across_month_boundary() -> None:
@@ -182,15 +184,15 @@ def test_compute_counts_uses_business_date_target_months_across_month_boundary()
     records = [
         {
             # 4月のレコード
-            "apr": Record("apr", datetime.date(2026, 4, 30), "標準"),
+            "apr": Record("apr", datetime.date(2026, 4, 30), "標準", "教育"),
         },
         {
             # 4月のレコード（apr は引き続き残存）
-            "apr": Record("apr", datetime.date(2026, 4, 30), "標準"),
+            "apr": Record("apr", datetime.date(2026, 4, 30), "標準", "教育"),
         },
         {
             # 5月のレコード（may は 5月 bucket で新規に登場）
-            "may": Record("may", datetime.date(2026, 5, 10), "標準"),
+            "may": Record("may", datetime.date(2026, 5, 10), "標準", "教育"),
         },
     ]
     dated_files = [
@@ -201,7 +203,7 @@ def test_compute_counts_uses_business_date_target_months_across_month_boundary()
 
     with patch("src.diff.read_records", side_effect=records):
         counts = compute_counts(
-            dated_files, _target_months_for, ("標準",), ("完了",), ()
+            dated_files, _target_months_for, ("標準",), ("教育",), ("完了",), ()
         )
 
     # 業務日 4/29 (4/30 ファイル vs previous=無し) → 比較なし
@@ -210,9 +212,9 @@ def test_compute_counts_uses_business_date_target_months_across_month_boundary()
     #   previous_by_month["2026-05"] は 5/1 ファイル側の 5月 bucket（空）。
     #   5/2 ファイルの "2026-05" bucket に may がある → 積み上げ 1
     # 延期は一切発生しない
-    assert RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_POSTPONED) not in counts.by_row
+    assert RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_POSTPONED) not in counts.by_row
     # 積み上げキーは業務日 5/1 で 1
-    assert counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", STATUS_ADDED)][
+    assert counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", "教育", STATUS_ADDED)][
         datetime.date(2026, 5, 1)
     ] == 1
 
@@ -225,9 +227,15 @@ def test_compute_counts_reads_each_file_only_once_across_month_boundary() -> Non
         Path("一覧_20260502.xlsx"),
     ]
     records = [
-        {"a": Record("a", datetime.date(2026, 4, 30), "標準")},
-        {"a": Record("a", datetime.date(2026, 4, 30), "標準"), "b": Record("b", datetime.date(2026, 5, 1), "標準")},
-        {"a": Record("a", datetime.date(2026, 4, 30), "標準"), "b": Record("b", datetime.date(2026, 5, 1), "標準")},
+        {"a": Record("a", datetime.date(2026, 4, 30), "標準", "教育")},
+        {
+            "a": Record("a", datetime.date(2026, 4, 30), "標準", "教育"),
+            "b": Record("b", datetime.date(2026, 5, 1), "標準", "教育"),
+        },
+        {
+            "a": Record("a", datetime.date(2026, 4, 30), "標準", "教育"),
+            "b": Record("b", datetime.date(2026, 5, 1), "標準", "教育"),
+        },
     ]
     dated_files = [
         (datetime.date(2026, 4, 30), paths[0]),  # → 業務日 4/29, 4/30
@@ -236,7 +244,9 @@ def test_compute_counts_reads_each_file_only_once_across_month_boundary() -> Non
     ]
 
     with patch("src.diff.read_records", side_effect=records) as reader:
-        compute_counts(dated_files, _target_months_for, ("標準",), ("完了",), ())
+        compute_counts(
+            dated_files, _target_months_for, ("標準",), ("教育",), ("完了",), ()
+        )
 
     # 各ファイルが読まれるのは1回だけ
     opened = [call.args[0] for call in reader.call_args_list]
@@ -254,11 +264,11 @@ def test_compute_counts_emits_next_month_label_for_lookahead() -> None:
     records = [
         {
             # 4月のレコード
-            "apr": Record("apr", datetime.date(2026, 4, 30), "標準"),
+            "apr": Record("apr", datetime.date(2026, 4, 30), "標準", "教育"),
         },
         {
             # 5月のレコード（先月ファイルには無い）
-            "may": Record("may", datetime.date(2026, 5, 10), "標準"),
+            "may": Record("may", datetime.date(2026, 5, 10), "標準", "教育"),
         },
     ]
     dated_files = [
@@ -275,16 +285,60 @@ def test_compute_counts_emits_next_month_label_for_lookahead() -> None:
 
     with patch("src.diff.read_records", side_effect=records):
         counts = compute_counts(
-            dated_files, _target_months_with_next, ("標準",), ("完了",), ()
+            dated_files, _target_months_with_next, ("標準",), ("教育",), ("完了",), ()
         )
 
     # 業務日 4/30 で「来月 = 5月」も対象に入る。
     # 4/30 ファイルには 5月のレコードが無いが、5/1 ファイルには may がある
     # → (来月, 標準, 積み上げ) = 1
-    assert counts.by_row[RowKey(LABEL_NEXT_MONTH, "標準", STATUS_ADDED)][
+    assert counts.by_row[RowKey(LABEL_NEXT_MONTH, "標準", "教育", STATUS_ADDED)][
         datetime.date(2026, 4, 30)
     ] == 1
     # 「来月」が対象だった業務日として記録される
     assert datetime.date(2026, 4, 30) in counts.target_dates_by_month[LABEL_NEXT_MONTH]
     # 「当月」も同様に記録される
     assert datetime.date(2026, 4, 30) in counts.target_dates_by_month[LABEL_CURRENT_MONTH]
+
+
+def test_compute_counts_separates_rows_by_crew() -> None:
+    """作業班（``CREWS``）のレコードを別々の行に分けて集計する。
+
+    ``(当月, 標準, 作業班A, 判定)`` と ``(当月, 標準, 作業班B, 判定)`` が
+    それぞれ別セルとして存在し、合算はされない。``_plan_prefix`` の前方一致
+    と異なり、作業班は完全一致で区別されることを担保する。
+    """
+    paths = [Path("一覧_20260421.xlsx"), Path("一覧_20260422.xlsx")]
+    records = [
+        {
+            # 作業班A（4/22 ファイルから消える → 延期 1）
+            "a_a": Record("a_a", datetime.date(2026, 4, 10), "標準", "作業班A"),
+        },
+        {
+            # 作業班B（4/22 で新規 → 積み上げ 1）
+            "b_b": Record("b_b", datetime.date(2026, 4, 10), "標準", "作業班B"),
+        },
+    ]
+    dated_files = [
+        (datetime.date(2026, 4, 21), paths[0]),
+        (datetime.date(2026, 4, 22), paths[1]),
+    ]
+
+    with patch("src.diff.read_records", side_effect=records):
+        counts = compute_counts(
+            dated_files, _target_months_for, ("標準",), ("作業班A", "作業班B"), ("完了",), ()
+        )
+
+    # 作業班A: 延期 1、積み上げはセル自体が無い
+    a_added = RowKey(LABEL_CURRENT_MONTH, "標準", "作業班A", STATUS_ADDED)
+    a_postponed = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", "作業班A", STATUS_POSTPONED)]
+    assert a_postponed[datetime.date(2026, 4, 21)] == 1
+    assert a_added not in counts.by_row
+    # 作業班B: 積み上げ 1、延期セルは無い
+    b_added = counts.by_row[RowKey(LABEL_CURRENT_MONTH, "標準", "作業班B", STATUS_ADDED)]
+    b_postponed = RowKey(LABEL_CURRENT_MONTH, "標準", "作業班B", STATUS_POSTPONED)
+    assert b_added[datetime.date(2026, 4, 21)] == 1
+    assert b_postponed not in counts.by_row
+    # キーは全て4要素で、作業班ごとに別セルとして存在する
+    assert all(len(key) == 4 for key in counts.by_row)
+    # 差分の出た 2 セルだけ by_row に登録される（差分が無い行はキー自体が無い）
+    assert len(counts.by_row) == 2

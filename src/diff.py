@@ -11,7 +11,7 @@ src/diff.py — 日付順に並んだファイルを、隣り合う日どうし�
 との差分は「8/24 に動いたぶん」、つまり **業務日 = 前側のファイルの日付**。
 ここで言う「業務日 D の列」とは「``一覧_(D+1)`` と ``一覧_(D+2)`` を比べた結果」。
 
-戻り値は ``Counts`` —— 「行キー (当月/来月ラベル, 種別, 判定) をキーに、
+戻り値は ``Counts`` —— 「行キー (当月/来月ラベル, 種別, 作業班, 判定) をキーに、
 **業務日**ごとの件数 dict を持つ」形に直接してある。
 """
 
@@ -35,7 +35,7 @@ LABEL_NEXT_MONTH = "来月"
 
 
 # 集計表の 1 行を指すキー。「業務日基準の対象月（**当月/来月のラベル**）」、
-# 「種別（標準/上位）」、「判定」の3要素NamedTuple。
+# 「種別（標準/上位）」、「作業班」、「判定」の4要素NamedTuple。
 # ``key.target_month`` のように名前で触れるようにした。
 # 2重のタプルより読みやすく、辞書キーにもなる（NamedTuple は hashable）。
 #
@@ -45,16 +45,18 @@ LABEL_NEXT_MONTH = "来月"
 class RowKey(NamedTuple):
     target_month: str  # "当月" / "来月"（実際の暦月ではない）
     plan: str  # 種別（標準/上位等）
+    crew: str  # 作業班（[FILTER] CREWS と完全一致）
     status: str
 
 
 # ``by_row`` のキー・値の型。``Counts`` と ``on_day_done`` のシグネチャで
 # 共有するため NamedTuple の外に置く。
-# キーは ``(対象月ラベル, 種別, 判定)`` の素のタプルにする（``RowKey`` NamedTuple だと
-# キーアクセス時の型共変性が崩れて呼び出し側で Literal 警告が出るため）。
+# キーは ``(対象月ラベル, 種別, 作業班, 判定)`` の素のタプルにする
+# （``RowKey`` NamedTuple だとキーアクセス時の型共変性が崩れて呼び出し側で
+# Literal 警告が出るため）。
 # 値は名称の都合上 NamedTuple ``RowKey`` も用意しておくが、内部のキー操作は
 # タプルで行う。
-ByRow = dict[tuple[str, str, str], dict[datetime.date, int]]
+ByRow = dict[tuple[str, str, str, str], dict[datetime.date, int]]
 
 # 1日ぶん集計が終わったあとに呼ばれるフック。``by_row`` と ``compared_dates`` は
 # ミュータブルで、ここまでの累積状態をそのまま渡す。書き出し側でファイルに
@@ -77,8 +79,9 @@ class Counts(NamedTuple):
     """全ファイル分の集計結果。
 
     - ``compared_dates``: ファイルが存在した日の集合（空セルとの区別用）
-    - ``by_row``: 行キー (当月/来月ラベル, 種別, 判定) の ``tuple`` → {業務日: 件数}。
-      該当しない日はキーに含まれない（CSV 側で空セルとして扱う）
+    - ``by_row``: 行キー (当月/来月ラベル, 種別, 作業班, 判定) の ``tuple``
+      → {業務日: 件数}。該当しない日はキーに含まれない
+      （CSV 側で空セルとして扱う）
     - ``target_dates_by_month``: ラベル → そのラベルが対象だった業務日の集合。
       ラベル基準になったので、``write_csv`` が業務日と当月/来月の対応付けに使う
     """
@@ -96,6 +99,7 @@ def compute_counts(
     dated_files: list[tuple[datetime.date, Path]],
     target_months_for: TargetMonthsFor,
     plan_prefixes: tuple[str, ...],
+    crews: tuple[str, ...],
     kinds: tuple[str, ...],
     rules: tuple,
     range_start: datetime.date | None = None,
@@ -156,7 +160,7 @@ def compute_counts(
         if index + 1 < len(dated_files):
             relevant_months.update(target_months_for(business_dates[index + 1]))
 
-        records = read_records(path, plan_prefixes, kinds, rules, progress=progress)
+        records = read_records(path, plan_prefixes, crews, kinds, rules, progress=progress)
         # 対象月ごとに「その対象月の行だけ」を取り出した辞書を作る。
         # キーは実際の暦月文字列（案件の日付と照合するため）。
         current_by_month: dict[str, dict[str, Record]] = {
@@ -183,9 +187,11 @@ def compute_counts(
                 postponed_keys = previous_records.keys() - current_records.keys()
                 for key in added_keys:
                     _inc(by_row, label, current_records[key].plan_prefix,
+                         current_records[key].crew,
                          STATUS_ADDED, business_date)
                 for key in postponed_keys:
                     _inc(by_row, label, previous_records[key].plan_prefix,
+                         previous_records[key].crew,
                          STATUS_POSTPONED, business_date)
                 # この業務日でそのラベルが対象だったことを記録。CSV 出力側で
                 # 「対象ラベルでない業務日は空セル」にするために使う。
@@ -258,17 +264,17 @@ def _sum_for(
     status: str,
     date: datetime.date,
 ) -> int:
-    """``(対象月ラベル, 種別, status)`` の各行のうち ``date`` の値を
-    種別をまたいで合計する。
+    """``(対象月ラベル, 種別, 作業班, status)`` の各行のうち ``date`` の値を
+    種別・作業班をまたいで合計する。
 
-    ログ表示用（「積み上げ合計◯件」相当）で、種別を区別せずに合算した件数を
-    出す。キー比較は ``(対象月ラベル, *, 判定)`` の形に揃える（``*`` は種別
-    によらず一致する）。
+    ログ表示用（「積み上げ合計◯件」相当）で、種別と作業班を区別せずに合算した
+    件数を出力する。ログの趣旨は「そのラベル・判定の合計」であり、種別や作業班
+    のどちらで集計しても結果の意味は変わらない。
     """
     return sum(
         values.get(date, 0)
         for key, values in by_row.items()
-        if key[0] == label and key[2] == status
+        if key[0] == label and key[3] == status
     )
 
 
@@ -276,13 +282,15 @@ def _inc(
     by_row: ByRow,
     label: str,
     plan_prefix: str,
+    crew: str,
     status: str,
     date: datetime.date,
 ) -> None:
-    """(対象月ラベル, 種別, 判定) のセルに 1 を足す。
+    """(対象月ラベル, 種別, 作業班, 判定) のセルに 1 を足す。
 
-    種別（標準/上位）ごとに別セルで数える。``plan_prefixes`` の設定順に並ぶ。
+    種別（標準/上位）・作業班ごとに別セルで数える。``plan_prefixes`` /
+    ``crews`` の設定順に並ぶ。
     """
-    key = (label, plan_prefix, status)
+    key = (label, plan_prefix, crew, status)
     per_date = by_row.setdefault(key, {})
     per_date[date] = per_date.get(date, 0) + 1

@@ -1,9 +1,10 @@
 """
 src/report.py — 集計結果を CSV に書き出す
 
-形は「当月/来月ラベル × 種別 × 判定」を行とし、業務日を列に並べたもの。
-行の数は **当月/来月 × 種別数 × 2判定**で決まる（``[FILTER] PLAN_PREFIXES``
-が既定の 2 件のとき 8 行。``PLAN_PREFIXES`` の件数が増減すれば行数も変わる）。
+形は「当月/来月ラベル × 種別 × 作業班 × 判定」を行とし、業務日を列に並べたもの。
+行の数は **当月/来月 × 種別数 × 作業班数 × 2判定**で決まる
+（``[FILTER] PLAN_PREFIXES`` が既定の 2 件、
+``[FILTER] CREWS`` が既定の 1 件のとき 8 行。件数が増減すれば行数も変わる）。
 """
 
 import datetime
@@ -19,9 +20,10 @@ logger = logging.getLogger(__name__)
 # 出力CSV の行ラベル（順序込み）。 ``run.py`` でこの順に行が並ぶ。
 ROW_LABELS: tuple[str, ...] = (LABEL_CURRENT_MONTH, LABEL_NEXT_MONTH)
 
-# 列見出し。「対象月」「種別」「判定」の3列構成。
+# 列見出し。「対象月」「種別」「作業班」「判定」の4列構成。
 COL_TARGET_MONTH = "対象月"
 COL_PLAN = "種別"
+COL_CREW = "作業班"
 COL_STATUS = "判定"
 
 STATUS_ADDED = "積み上げ"
@@ -37,7 +39,7 @@ def write_csv(
     path: Path,
     by_row: ByRow,
     dates: list[tuple[datetime.date, bool]],
-    row_keys: list[tuple[str, str]],
+    row_keys: list[tuple[str, str, str]],
     target_dates_by_month: dict[str, set[datetime.date]] | None = None,
 ) -> tuple[int, int]:
     """集計 CSV を1本だけ書く。
@@ -47,10 +49,11 @@ def write_csv(
     「ファイルはあったが件数が 0」を ``"0"`` で表す。それ以外（ファイル無し、
     ラベルでない業務日、履歴）は空セルにする。
 
-    ``row_keys`` は ``(対象月ラベル, 種別)`` の組のリスト（順序は呼び出し側で
-    決めている = 当月/来月の次に ``PLAN_PREFIXES`` の順）。書き出される行は
-    ``row_keys`` のそれぞれに {積み上げ, 延期} の 2 行を足した分になる
-    （例: ``PLAN_PREFIXES = [標準, 上位]`` のとき 4 組 × 2 = 8 行）。
+    ``row_keys`` は ``(対象月ラベル, 種別, 作業班)`` の組のリスト（順序は
+    呼び出し側で決めている = 当月/来月の次に ``PLAN_PREFIXES`` の順、
+    さらに ``CREWS`` の順）。書き出される行は ``row_keys`` のそれぞれに
+    {積み上げ, 延期} の 2 行を足した分になる（例: ``PLAN_PREFIXES = [標準, 上位]``、
+    ``CREWS = [教育]`` のとき 4 組 × 2 = 8 行）。
 
     ``target_dates_by_month`` はラベルごとに「そのラベルが対象だった業務日」
     の集合。同じ行でも、ラベルでない業務日の列は空セルにする必要がある。
@@ -59,39 +62,42 @@ def write_csv(
     「出力しました」のログは呼び出し側で最後の1回に絞って出す（出力ファイル
     1本につき1行だけにするため）。
 
-    過去バージョン（``種別``列なしの ``集計.csv``、もしくは別構成の CSV）を
-    引き継いだ場合、``row_keys`` に無い行はそのまま残らない（黙って消える）。
-    列構成を大きく変えた以上、``集計.csv`` を消してから作り直す運用が
-    推奨（``config.ini.example`` の注意書き参照）。
+    過去バージョン（``作業班``列なしの ``集計.csv``、もしくは別構成の CSV）を
+    引き継いだ場合、``row[COL_CREW]`` を参照するところで ``KeyError`` で
+    落ちるので、必ず ``集計.csv`` を消してから作り直すこと（``config.ini.example``
+    の注意書き参照）。
     """
     columns = [
         COL_TARGET_MONTH,
         COL_PLAN,
+        COL_CREW,
         COL_STATUS,
         *(d.isoformat() for d, _ in dates),
     ]
 
-    # 既存行を ``(対象月ラベル, 種別, 判定)`` で引ける形にする
-    existing_by_key: dict[tuple[str, str, str], ExistingRow] = {}
+    # 既存行を ``(対象月ラベル, 種別, 作業班, 判定)`` で引ける形にする
+    existing_by_key: dict[tuple[str, str, str, str], ExistingRow] = {}
     if path.exists():
         for row in read_existing(path):
             key = (
                 str(row[COL_TARGET_MONTH]),
                 str(row[COL_PLAN]),
+                str(row[COL_CREW]),
                 str(row[COL_STATUS]),
             )
             existing_by_key[key] = row
 
     statuses = (STATUS_ADDED, STATUS_POSTPONED)
     new_rows: list[dict[str, object]] = []
-    for label, plan in row_keys:
+    for label, plan, crew in row_keys:
         for status in statuses:
-            key = (label, plan, status)
+            key = (label, plan, crew, status)
             row = existing_by_key.pop(key, {}).copy()
             row[COL_TARGET_MONTH] = label
             row[COL_PLAN] = plan
+            row[COL_CREW] = crew
             row[COL_STATUS] = status
-            per_date = by_row.get(RowKey(label, plan, status), {})
+            per_date = by_row.get(RowKey(label, plan, crew, status), {})
             label_active_dates = (
                 target_dates_by_month.get(label) if target_dates_by_month else None
             )
@@ -150,7 +156,7 @@ def last_date_in_csv(existing: list[ExistingRow]) -> datetime.date | None:
     """
     if not existing:
         return None
-    first_col_index = 3  # 対象月 / 種別 / 判定 の3列のあと
+    first_col_index = 4  # 対象月 / 種別 / 作業班 / 判定 の4列のあと
     dates = [
         date
         for date in (

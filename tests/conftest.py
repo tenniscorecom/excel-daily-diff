@@ -1,14 +1,10 @@
-import datetime
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from comken import Config
 from openpyxl import Workbook
 
-from src.source import ColumnRule, read_records
-
-HEADERS = ["顧客番号", "予定日", "種別", "状態"]
+HEADERS = ["顧客番号", "予定日", "種別", "施工作業班", "状態"]
 
 
 @pytest.fixture
@@ -78,10 +74,12 @@ HEADER_ROW = 1
 KEY_COLUMN = 顧客番号
 DATE_COLUMN = 予定日
 PLAN_COLUMN = 種別
+CREW_COLUMN = 施工作業班
 KIND_COLUMN = 状態
 
 [FILTER]
 PLAN_PREFIXES = [標準, 上位]
+CREWS = [教育]
 KINDS = [完了, 予定]
 """
 
