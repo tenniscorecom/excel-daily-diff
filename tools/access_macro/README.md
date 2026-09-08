@@ -189,3 +189,71 @@ VBE で `Sub RunFullPipeline` 内にカーソルを置いて `F5`、または Ac
 - `CLEANUP_TEMP_TABLES = False` のときは一時テーブル `_V3_*` が DB に残るので手動で
   削除する（残っていても次回実行時に作り直すので支障はない）
 - `[EXCLUDE_CONTAINS]` などの追加絞り込みとシート名の候補指定は未対応（Python 側を使う）
+
+---
+
+# 起動 GUI（AutoExec + ボタン UI）
+
+VBE で `F5` を押すか Immediate Window に `Call ...` を打ち込まなくても、Access を
+**開いただけで**集計用のボタン UI が出る仕組み。VBA 本体（`ExportV3.bas` /
+`DiffPipeline.bas`）は **1 バイトも変更していない**。薄いフォームと AutoExec
+マクロを被せただけ。
+
+## ファイル
+
+| ファイル | 役割 |
+|---|---|
+| `UILauncher.bas` | AutoExec が無い環境で手動起動するための `Sub LaunchUI`（`DoCmd.OpenForm "frmStart"` だけ） |
+| `dist/frmStart_spec.md` | 起動フォーム `frmStart` の仕様書（コントロール一覧・On Click マクロ式・`RefreshLabels`） |
+| `dist/import_steps.md` | Access 環境がある人が .accdb に組み込む手順 |
+
+完成版 `.accdb` はこのリポジトリには含まれていない（Access 環境で生成する必要が
+あるため）。`.accdb` を手元で組み上げる手順は `dist/import_steps.md` を参照。
+
+## 起動方法
+
+| 方法 | 操作 |
+|---|---|
+| Access を普通に開く | AutoExec マクロが起動フォーム `frmStart` を自動で開く |
+| AutoExec が動かない環境で手動起動 | VBE で `Sub LaunchUI` にカーソル → `F5`、または Immediate Window で `Call LaunchUI` |
+
+## UI の動作
+
+起動フォーム `frmStart` は次の要素を持つ（詳細は `dist/frmStart_spec.md`）:
+
+- タイトル: `延期積上集計 - 起動`
+- ラベル 14 個（見出し 2 + 設定値表示 11 + 注意書き 1）
+  - 上段 6 個は `ExportV3.bas` の `Public Const`（`DB_PATH` / `SOURCE_NAME` /
+    `OUTPUT_FOLDER` / `FILE_PREFIX` / `APPLY_FILTER` / `TARGET_MONTH`）
+  - 下段 4 個は `DiffPipeline.bas` の `Public Const`（`ROLLING_MODE` /
+    `ROLLING_WINDOW_DAYS` / `KEY_COLUMN` / `INCREMENTAL_SAVE`）
+- コマンドボタン 2 個
+  - `エクスポート実行`（On Click: `=ExportV3()`）
+  - `集計実行`（On Click: `=RunFullPipeline()`）
+
+**入力欄は無い**。`Public Const` はコンパイル時定数で実行時に書き換えできない
+ため、設定変更は引き続き VBE での `Public Const` 編集（初回 1 回だけ）→
+Access 再起動で反映する運用。
+
+`RefreshLabels()` が `Form_Load` で `Public Const` の現在値を読み出してラベル
+に設定する。Public Const への書き込みは一切行わない。
+
+## 前提
+
+- Access 2010 以降
+- `ExportV3.bas` と `DiffPipeline.bas` の**両方**が同じ DB にインポート済み
+- AutoExec マクロが **マクロ名 `AutoExec`** として保存されている
+  （Access 起動時に自動実行されるのはこの名前のマクロだけ）
+- マクロのセキュリティ設定が「通知」以上のレベルで、初回起動時に
+  「コンテンツを有効にする」をクリックできる
+
+## 既存の集計パイプラインとの関係
+
+| 既存の実行方法 | GUI 起動後の挙動 |
+|---|---|
+| VBE で `Sub ExportV3` にカーソル → F5 | `btnExport` クリックで同じ動作（On Click: `=ExportV3()`） |
+| VBE で `Sub RunFullPipeline` にカーソル → F5 | `btnRunPipeline` クリックで同じ動作（On Click: `=RunFullPipeline()`） |
+| Immediate Window で `Call ExportV3` | 同上（ボタン経由でなく直接呼ぶ運用も引き続き可能） |
+
+`Public Const` / 関数シグネチャ / 動作は一切変わっていない。GUI はあくまで
+**入口だけ**を追加している。

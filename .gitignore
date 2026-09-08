@@ -12,6 +12,9 @@ venv/
 *.egg-info/
 dist/
 build/
+# ただし tools/access_macro/dist/ は Access 起動 UI の仕様書を置く場所なので例外
+#（Python ビルド成果物の dist/ とは別物）
+!tools/access_macro/dist/
 
 # Config の補完スタブ（自動生成。エディタ補完専用なので git に含めない）
 typings/
