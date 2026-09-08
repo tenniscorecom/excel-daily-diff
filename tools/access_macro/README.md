@@ -290,3 +290,22 @@ CSV の取り込みには **選択肢 C（テーブルだけ）**を採用して
 
 `Public Const` / 関数シグネチャ / 動作は一切変わっていない。GUI はあくまで
 **入口だけ**を追加している。
+
+---
+
+# K/S 用パイプライン
+
+V3 用パイプライン（`ExportV3.bas` / `DiffPipeline.bas`）と同じ仕組みで、K/S 用にも次のモジュールを用意しています。
+
+| ファイル | 役割 |
+|---|---|
+| `ExportKS.bas` | K 用の Excel エクスポート |
+| `DiffKS.bas` | K 用の差分・積み上げ集計 |
+| `ExportS.bas` | S 用の Excel エクスポート |
+| `DiffS.bas` | S 用の差分・積み上げ集計 |
+
+K/S 用は**V3 用とは別の Access プロジェクト（別 `.accdb`）で運用**してください。同じ `.accdb` に V3 用と K/S 用のモジュールを取り込むと、`Public Const` の重複でコンパイルエラーになります。
+
+今回は「一旦 V3 と同じ」ベースで複製しています。K/S 固有の列構成が確認できた段階で、各 `Export*.bas` の定数や集計条件を個別に調整してください。`PLAN_PREFIXES` は K/S の種別列が不明なため空文字にしており、種別フィルターを無効化しています。
+
+出力先は V3 と同じ `OUTPUT_FOLDER` を使い、集計 CSV は K 用が `K_集計.csv`、S 用が `S_集計.csv` です。K/S 用の `frmStart` / `frmResult` は複製せず、当面は VBE または Immediate Window から `Call ExportV3` / `Call RunFullPipeline` を手動実行してください（モジュール名は `ExportKS` / `ExportS`、公開 Sub は複製元と同じです）。
