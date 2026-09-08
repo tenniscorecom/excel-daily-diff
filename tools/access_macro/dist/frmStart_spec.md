@@ -6,8 +6,9 @@
 ので、入力欄は持たず、**現在値をラベル表示するだけ**にする。設定変更は引き続き
 VBE での `Public Const` 編集（初回 1 回だけ）。
 
-ボタン 2 つ（エクスポート実行 / 集計実行）が On Click で既存関数を直接呼ぶ。
-ラッパー VBA は設けない。
+ボタン 3 つ（エクスポート実行 / 集計実行 / 結果を表示）が On Click で既存関数を直接呼ぶ。
+既存のエクスポート / 集計ボタン用のラッパー VBA は設けず、結果表示に必要な
+`ResultView.bas` の `ShowResult` だけを追加する。
 
 ---
 
@@ -58,10 +59,11 @@ Access のフォームデザイナで **デザインビュー**を開き、ツ�
 | 14 | `lblHint` | ラベル | `※設定変更は VBE で Public Const を書き換えてから Access を再起動してください。` | — | 下端 | — |
 | 15 | `btnExport` | コマンドボタン | `エクスポート実行` | —（On Click: `=ExportV3()`） | 右下寄り、幅広 | `ExportV3.ExportV3` |
 | 16 | `btnRunPipeline` | コマンドボタン | `集計実行` | —（On Click: `=RunFullPipeline()`） | `btnExport` の右隣 | `DiffPipeline.RunFullPipeline` |
+| 17 | `btnShowResult` | コマンドボタン | `結果を表示` | —（On Click: `=ShowResult()`） | `btnRunPipeline` の右隣 | `ResultView.ShowResult` |
 
 ### タブ順
 
-1 → 2 → 3 → ... → 14 → 15 → 16 の順（上から下、左から右）。
+1 → 2 → 3 → ... → 14 → 15 → 16 → 17 の順（上から下、左から右）。
 
 ---
 
@@ -75,6 +77,7 @@ Access のフォームデザイナで **デザインビュー**を開き、ツ�
 |---|---|
 | `btnExport` | `=ExportV3()` |
 | `btnRunPipeline` | `=RunFullPipeline()` |
+| `btnShowResult` | `=ShowResult()` |
 
 > **判断**: マクロ式が動かない環境（？）を心配する声があるが、Access のボタン
 > On Click で式が動かない環境は基本的に無い。動かない環境に当たった場合のみ
@@ -87,6 +90,10 @@ Access のフォームデザイナで **デザインビュー**を開き、ツ�
 >
 > Private Sub btnRunPipeline_Click()
 >     RunFullPipeline
+> End Sub
+>
+> Private Sub btnShowResult_Click()
+>     ShowResult
 > End Sub
 > ```
 
@@ -147,6 +154,8 @@ End Sub
       既存の `Public Const` の現在値が表示される
 - [ ] 「エクスポート実行」ボタンを押すと `ExportV3` が走る（MsgBox で完了通知）
 - [ ] 「集計実行」ボタンを押すと `RunFullPipeline` が走る（MsgBox で完了通知）
+- [ ] 「結果を表示」ボタンを押すと `frmResult` が開き、最新の `集計.csv` が
+      データシートビューで表示される
 - [ ] フォームを × で閉じた後、再度 Access を開くと AutoExec がフォームを開く
 - [ ] VBE で `Public Const` を書き換えて Access を再起動すると、ラベルの表示も
       新しい値に変わっている
@@ -162,7 +171,9 @@ End Sub
 1. Access を起動し、空のデータベースを作成（例: `enki.accdb`）
 2. `Alt + F11` で VBE を開く
 3. 既存の `ExportV3.bas` / `DiffPipeline.bas` をインポートする
-   （`ファイル → ファイルのインポート`）
+   （`ファイル → ファイルのインポート`）。`btnShowResult` の On Click で使う
+   `ResultView.bas` も同時にインポートする
+   結果表示を使う場合は、同じ手順で `ResultView.bas` もインポートする
 4. 本仕様書 §1〜§3 に従ってフォーム `frmStart` を作成する
 5. §4 のコードをフォームモジュールに貼り付ける
 6. ナビゲーションウィンドウで `frmStart` を右クリック → デザインビューで開き、

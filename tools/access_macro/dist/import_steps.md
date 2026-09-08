@@ -47,6 +47,8 @@ Access DB（`ExportV3.bas` / `DiffPipeline.bas` をインポート済み）に�
 4. 同じ手順で `DiffPipeline.bas` をインポート
 5. 同じく `UILauncher.bas` をインポート（AutoExec を後付けできない環境で手動起動
    したいときのため。**省略可**）
+6. `ResultView.bas` をインポート（「結果を表示」ボタンと `frmResult` の
+   CSV 読み込みに必要）
 
 > `UILauncher.bas` は AutoExec が既に動く環境では使われない。1 度フォームを
 > 閉じてから Immediate Window で `Call LaunchUI` して再オープンする場面用に
@@ -59,15 +61,16 @@ Access DB（`ExportV3.bas` / `DiffPipeline.bas` をインポート済み）に�
 1. VBE ではなく Access 側で **作成 → フォーム デザイン** を選択
 2. フォーム名を `frmStart` にする（プロパティシートの「その他」タブ）
 3. 標題を `延期積上集計 - 起動` にする（プロパティシートの「書式」タブ）
-4. 仕様書の §2 に従い、ラベル 14 個とコマンドボタン 2 個を配置
+4. 仕様書の §2 に従い、ラベル 14 個とコマンドボタン 3 個を配置
    - ラベル: `lblTitle` / `lblSection1` / `lblDbPath` / `lblSourceName` /
      `lblOutputFolder` / `lblFilePrefix` / `lblApplyFilter` / `lblTargetMonth` /
      `lblSection2` / `lblRollingMode` / `lblRollingDays` / `lblKeyColumn` /
      `lblIncrementalSave` / `lblHint`
-   - ボタン: `btnExport` / `btnRunPipeline`
+   - ボタン: `btnExport` / `btnRunPipeline` / `btnShowResult`
 5. ボタンの **On Click** を **マクロ式** にする:
    - `btnExport` の On Click → `=ExportV3()`
    - `btnRunPipeline` の On Click → `=RunFullPipeline()`
+   - `btnShowResult` の On Click → `=ShowResult()`
 6. フォームを保存して閉じる
 
 ### 3.3 フォームモジュールのコード貼り付け
@@ -99,6 +102,39 @@ Access DB（`ExportV3.bas` / `DiffPipeline.bas` をインポート済み）に�
 2. DB を再度開く
 3. ナビゲーションウィンドウの上に `frmStart` が自動で表示されれば OK
 4. それぞれのボタンを押して、`ExportV3` / `RunFullPipeline` が走れば完了
+
+### 3.6 結果表示フォームの組み上げ
+
+`ResultView.bas` をインポートした後、[`frmResult_spec.md`](./frmResult_spec.md) に従って
+結果表示フォームを作る。
+
+1. Access 側で **作成 → フォーム デザイン**を選択する。
+2. フォーム名を `frmResult`、標題を `集計結果` にする。
+3. Default View を `Datasheet`、Allow Datasheet View / Allow Form View を `Yes` にする。
+4. Scroll Bars を `Both`、Record Selectors を `No`、Navigation Buttons を `Yes`、
+   ポップアップを `No` にする。Close Button は有効のままにする。
+5. `Record Source` は空欄のままでもよい（`ReloadResult` がリンク後に `tblCsv` を設定する）。
+   フォーム上にコントロールを配置する必要はない。
+6. フォームのコードに次を貼り付けて保存する。
+
+   ```vba
+   Option Compare Database
+   Option Explicit
+
+   Private Sub Form_Load()
+       ReloadResult
+   End Sub
+   ```
+
+7. `frmStart` のデザインビューを開き、`btnRunPipeline` の右隣にコマンドボタンを追加する。
+   コントロール名を `btnShowResult`、標題を `結果を表示` にし、タブ順を最後にする。
+8. `btnShowResult` の On Click にマクロ式 `=ShowResult()` を設定する。
+9. `集計.csv` が作成済みの状態で `frmStart` の「結果を表示」を押し、
+   `frmResult` がデータシートビューで表示されることを確認する。
+
+初回の「結果を表示」時に `OUTPUT_FOLDER\集計.csv` が `tblCsv` としてリンクされる。
+以後もボタンを押すたびにリンクを張り直すため、集計後の最新内容が表示される。
+既存のローカルテーブル `tblCsv` がある場合は誤削除を避けて停止するので、先に名前を変更する。
 
 ---
 

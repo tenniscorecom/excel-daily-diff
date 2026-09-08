@@ -12,6 +12,8 @@ Microsoft Access から当日付のデータを Excel にエクスポートす�
 |---|---|
 | `ExportV3.bas` | Access 側で動く VBA モジュール本体（Excel への書き出し） |
 | `DiffPipeline.bas` | 書き出し済みファイルを読み直して集計まで行う（Python 版と同じ処理） |
+| `ResultView.bas` | `集計.csv` をリンクして `frmResult` に表示する VBA モジュール |
+| `dist/frmResult_spec.md` | 結果表示フォーム `frmResult` の仕様書 |
 
 ## 概要
 
@@ -27,6 +29,8 @@ Microsoft Access から当日付のデータを Excel にエクスポートす�
 4. モジュール `ExportV3` がプロジェクトに追加される
 5. 集計まで Access で行う場合は、同じ手順で `DiffPipeline.bas` も追加する
    （`DiffPipeline` は `ExportV3` の定数を参照するので、片方だけでは動かない）
+6. 結果表示まで Access 内で行う場合は、同じ手順で `ResultView.bas` も追加する
+   （`frmResult` の作成方法と `frmStart` へのボタン追加は `dist/import_steps.md` を参照）
 
 ## 定数の書き換え
 
@@ -163,7 +167,7 @@ VBE で `Sub RunFullPipeline` 内にカーソルを置いて `F5`、または Ac
 
 ## 出力
 
-`OUTPUT_FOLDER` に `OUTPUT_NAME`（既定 `集計.csv`）で書き出す。UTF-8（BOM なし）・CRLF。
+`OUTPUT_FOLDER` に `OUTPUT_NAME`（既定 `集計.csv`）で書き出す。UTF-8（BOM 付き）・CRLF。
 
 - 列は `対象月, 種別, 判定, <業務日...>` の 3 キー列 + 業務日の列
 - 行は `当月`/`来月` × `PLAN_PREFIXES` の種別 × `積み上げ`/`延期` の固定構成
@@ -204,7 +208,9 @@ VBE で `F5` を押すか Immediate Window に `Call ...` を打ち込まなく�
 | ファイル | 役割 |
 |---|---|
 | `UILauncher.bas` | AutoExec が無い環境で手動起動するための `Sub LaunchUI`（`DoCmd.OpenForm "frmStart"` だけ） |
+| `ResultView.bas` | `集計.csv` を `tblCsv` としてリンクし、`frmResult` に表示する `Sub ShowResult` / `Sub ReloadResult` |
 | `dist/frmStart_spec.md` | 起動フォーム `frmStart` の仕様書（コントロール一覧・On Click マクロ式・`RefreshLabels`） |
+| `dist/frmResult_spec.md` | 結果表示フォーム `frmResult` の仕様書（Datasheet・`tblCsv`・`ReloadResult`） |
 | `dist/import_steps.md` | Access 環境がある人が .accdb に組み込む手順 |
 
 完成版 `.accdb` はこのリポジトリには含まれていない（Access 環境で生成する必要が
@@ -222,14 +228,15 @@ VBE で `F5` を押すか Immediate Window に `Call ...` を打ち込まなく�
 起動フォーム `frmStart` は次の要素を持つ（詳細は `dist/frmStart_spec.md`）:
 
 - タイトル: `延期積上集計 - 起動`
-- ラベル 14 個（見出し 2 + 設定値表示 11 + 注意書き 1）
+- ラベル 14 個（タイトル 1 + 見出し 2 + 設定値表示 10 + 注意書き 1）
   - 上段 6 個は `ExportV3.bas` の `Public Const`（`DB_PATH` / `SOURCE_NAME` /
     `OUTPUT_FOLDER` / `FILE_PREFIX` / `APPLY_FILTER` / `TARGET_MONTH`）
   - 下段 4 個は `DiffPipeline.bas` の `Public Const`（`ROLLING_MODE` /
     `ROLLING_WINDOW_DAYS` / `KEY_COLUMN` / `INCREMENTAL_SAVE`）
-- コマンドボタン 2 個
+- コマンドボタン 3 個
   - `エクスポート実行`（On Click: `=ExportV3()`）
   - `集計実行`（On Click: `=RunFullPipeline()`）
+  - `結果を表示`（On Click: `=ShowResult()`）
 
 **入力欄は無い**。`Public Const` はコンパイル時定数で実行時に書き換えできない
 ため、設定変更は引き続き VBE での `Public Const` 編集（初回 1 回だけ）→
@@ -238,10 +245,35 @@ Access 再起動で反映する運用。
 `RefreshLabels()` が `Form_Load` で `Public Const` の現在値を読み出してラベル
 に設定する。Public Const への書き込みは一切行わない。
 
+## 結果を表示
+
+「集計実行」で `集計.csv` を更新した後、`frmStart` の「結果を表示」を押すと、
+`frmResult` が開き、最新の CSV を Access のデータシートビューで確認できる。
+フォームの詳しいプロパティと組み上げ手順は [`dist/frmResult_spec.md`](./dist/frmResult_spec.md)
+を参照する。
+
+- `btnShowResult` の On Click: `=ShowResult()`
+- `frmResult` の標題: `集計結果`
+- `frmResult` の Default View: `Datasheet`
+- `frmResult.Form_Load`: `ReloadResult` を呼び出す
+
+CSV の取り込みには **選択肢 C（テーブルだけ）**を採用している。`ResultView.bas` の
+`ReloadResult` は `OUTPUT_FOLDER` と `OUTPUT_NAME` の Public Const を読み取って
+フルパスを作り、Access 標準の `DoCmd.TransferText`（`acLinkDelim`）で固定リンク
+テーブル `tblCsv` を張り直す。その後 `frmResult.RecordSource` を `tblCsv` に設定する。
+クエリや一時テーブルは作成しないため、CSV の列構成が変わっても再表示時に反映される。
+既に `frmResult` が開いている状態でボタンを押した場合も `ReloadResult` が走る。
+
+`DiffPipeline.bas` が出力する UTF-8 BOM 付き CSV を Access 標準機能で読み込む構成で、
+`ExportV3.bas` / `DiffPipeline.bas` / `UILauncher.bas` の定数や処理は変更していない。
+`集計.csv` がまだ無い場合は、エラー番号と詳細を含むメッセージが表示される。
+
 ## 前提
 
 - Access 2010 以降
 - `ExportV3.bas` と `DiffPipeline.bas` の**両方**が同じ DB にインポート済み
+- 結果表示を使う場合は `ResultView.bas` もインポートし、`frmResult` と `btnShowResult` を
+  `dist/import_steps.md` の手順で作成済み
 - AutoExec マクロが **マクロ名 `AutoExec`** として保存されている
   （Access 起動時に自動実行されるのはこの名前のマクロだけ）
 - マクロのセキュリティ設定が「通知」以上のレベルで、初回起動時に
@@ -254,6 +286,7 @@ Access 再起動で反映する運用。
 | VBE で `Sub ExportV3` にカーソル → F5 | `btnExport` クリックで同じ動作（On Click: `=ExportV3()`） |
 | VBE で `Sub RunFullPipeline` にカーソル → F5 | `btnRunPipeline` クリックで同じ動作（On Click: `=RunFullPipeline()`） |
 | Immediate Window で `Call ExportV3` | 同上（ボタン経由でなく直接呼ぶ運用も引き続き可能） |
+| `frmStart` で「結果を表示」 | `btnShowResult` が `ShowResult` を呼び、`frmResult` に最新の `集計.csv` を表示 |
 
 `Public Const` / 関数シグネチャ / 動作は一切変わっていない。GUI はあくまで
 **入口だけ**を追加している。
